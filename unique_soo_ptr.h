@@ -58,10 +58,11 @@ struct operands_provider
 	template<typename T>
 	static void __explicit_move_with_destroy(void* lhs, void* rhs)
 	{
+		auto* reinterpreted = reinterpret_cast<T*>(rhs);
 		// conditional move warning!
 		if(lhs)
-			new (lhs) T(std::move(*static_cast<T*>(rhs)));
-		(*static_cast<T*>(rhs)).~T();
+			new (lhs) T(std::move(*reinterpreted));
+		(*reinterpreted).~T();
 	}
 
 	static void __explicit_nothing(void*, void*) {}
@@ -151,64 +152,13 @@ public:
 
 	type_erased_soo_ptr(self_type&& rhs) noexcept
 	{
-		_opfuncs = rhs._opfuncs;
-		if (rhs._ptr)
-		{
-			this->set_size(rhs.get_size());
-			this->set_alignment(rhs.get_alignment());
-
-			if (rhs.__is_soo_optimised())
-			{
-				auto ptr_data = __create_aligned();
-				this->set_alignment(ptr_data.offset);
-				_ptr = static_cast<base_type*>(ptr_data.p);
-				_opfuncs._placement_move_and_destroy(_ptr, rhs._ptr);
-			}
-			else
-			{
-				_ptr = rhs._ptr;
-				this->set_offset(rhs.get_offset());
-			}
-			rhs._ptr = nullptr;
-		}
-		else
-		{
-			this->set_size(0);
-			this->set_alignment(0);
-			this->set_offset(0);
-		}
+		__move_from(std::move(rhs));
 	}
 
 	self_type& operator=(self_type&& rhs) noexcept
 	{
 		__deallocate();
-
-		_opfuncs = rhs._opfuncs;
-		if (rhs._ptr)
-		{
-			this->set_size(rhs.get_size());
-			this->set_alignment(rhs.get_alignment());
-
-			if (rhs.__is_soo_optimised())
-			{
-				auto ptr_data = __create_aligned();
-				this->set_alignment(ptr_data.offset);
-				_ptr = static_cast<base_type*>(ptr_data.p);
-				_opfuncs._placement_move_and_destroy(_ptr, rhs._ptr);
-			}
-			else
-			{
-				_ptr = rhs._ptr;
-				this->set_offset(rhs.get_offset());
-			}
-			rhs._ptr = nullptr;
-		}
-		else
-		{
-			this->set_size(0);
-			this->set_alignment(0);
-			this->set_offset(0);
-		}
+		__move_from(std::move(rhs));
 
 		return *this;
 	}
@@ -218,6 +168,37 @@ public:
 
 private:
 
+	inline void __move_from(self_type&& rhs)
+	{
+		_opfuncs = rhs._opfuncs;
+		if (rhs._ptr)
+		{
+			this->set_size(rhs.get_size());
+			this->set_alignment(rhs.get_alignment());
+
+			if (rhs.__is_soo_optimised())
+			{
+				auto ptr_data = __create_aligned(rhs.get_size());
+				_ptr = reinterpret_cast<base_type*>(ptr_data.p);
+				this->set_offset(ptr_data.offset);
+				_opfuncs._placement_move_and_destroy(_ptr, rhs._ptr);
+			}
+			else
+			{
+				_ptr = rhs._ptr;
+				this->set_offset(rhs.get_offset());
+			}
+			rhs._ptr = nullptr;
+		}
+		else
+		{
+			this->set_size(0);
+			this->set_alignment(0);
+			this->set_offset(0);
+			_ptr = nullptr;
+		}
+	}
+
 	template<typename U>
 	inline void __construct(
 		typename std::enable_if<!std::is_same<U, std::nullptr_t >::value, U>::type&& rhs)
@@ -225,7 +206,7 @@ private:
 		this->set_alignment(alignof(U));
 		this->set_size(sizeof(U));
 
-		auto aligned_ptr_data = __create_aligned();
+		auto aligned_ptr_data = __create_aligned(sizeof(U));
 
 		this->set_offset(aligned_ptr_data.offset);
 		_opfuncs._placement_move_and_destroy = operands_provider::__explicit_move_with_destroy<U>;
@@ -245,7 +226,8 @@ private:
 	}
 
 	template<bool with_throw = true, bool force_no_alloc = false, bool _with_superaligned_data = with_superaligned_data>
-	inline typename std::enable_if<(_with_superaligned_data), __aligned_malloc_impl_result>::type __create_aligned()
+	inline typename std::enable_if<(_with_superaligned_data), __aligned_malloc_impl_result>::type
+		__create_aligned(size_t)
 	{
 		size_t aligned_buffer_size = buffer_size;
 		void* buffer_pointer = _buf;
@@ -268,9 +250,15 @@ private:
 	}
 
 	template<bool with_throw = true, bool force_no_alloc = false, bool _with_superaligned_data = with_superaligned_data>
-	inline typename std::enable_if<(!_with_superaligned_data), __aligned_malloc_impl_result>::type __create_aligned()
+	inline typename std::enable_if<(!_with_superaligned_data), __aligned_malloc_impl_result>::type
+		__create_aligned(size_t size_override)
 	{
-		return { _buf, 0 };
+		__aligned_malloc_impl_result aligned_result{_buf, 0};
+		if(size_override > buffer_size)
+			aligned_result.p = malloc(size_override);
+		if(with_throw && !aligned_result.p)
+			throw std::bad_alloc();
+		return aligned_result;
 	}
 
 public:
@@ -278,7 +266,7 @@ public:
 	template<typename U = base_type>
 	inline U* get() noexcept
 	{
-		return static_cast<U*>(_ptr);
+		return reinterpret_cast<U*>(_ptr);
 	}
 
 	template<typename U = base_type>
@@ -290,7 +278,7 @@ public:
 	template<typename U = base_type>
 	inline const U* get() const noexcept
 	{
-		return static_cast<const U*>(_ptr);
+		return reinterpret_cast<const U*>(_ptr);
 	}
 
 	template<typename U = base_type>
@@ -315,11 +303,11 @@ public:
 
 		if (with_optimisation && __can_be_soo_optimised<U>())
 		{
-			auto aligned_ptr = __create_aligned<true, true>();
+			auto aligned_ptr = __create_aligned<true, true>(sizeof(U));
 			_opfuncs._placement_move_and_destroy(aligned_ptr.p, ptr);
 			delete ptr;
 
-			_ptr = static_cast<base_type*>(aligned_ptr.p);
+			_ptr = reinterpret_cast<base_type*>(aligned_ptr.p);
 			this->set_offset(aligned_ptr.offset);
 		}
 		else
@@ -343,9 +331,9 @@ public:
 
 		_opfuncs._placement_move_and_destroy = operands_provider::__explicit_move_with_destroy<U>;
 
-		__aligned_malloc_impl_result aligned_ptr = __create_aligned();
+		auto aligned_ptr = __create_aligned(sizeof(U));
 		this->set_offset(aligned_ptr.offset);
-		_ptr = static_cast<U*>(aligned_ptr.p);
+		_ptr = reinterpret_cast<U*>(aligned_ptr.p);
 		_opfuncs._placement_move_and_destroy(aligned_ptr.p, &unconditionally_moved_data);
 	}
 
