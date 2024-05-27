@@ -102,7 +102,7 @@ private:
 template<>
 struct soo_ptr_alignment_handler<false>
 {
-	inline uint16_t get_size() const { return 0xFFFF; }
+	inline uint16_t get_size() const { return 0; }
 	inline void set_size(uint16_t) { }
 	inline uint8_t get_offset() const { return 0; }
 	inline void set_offset(uint8_t) { }
