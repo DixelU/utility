@@ -89,9 +89,9 @@ struct soo_ptr_alignment_handler<true>
 {
 	inline uint16_t get_size() const { return _size; }
 	inline void set_size(uint16_t s) { _size = s; }
-	inline uint8_t get_offset() const { return 0; }
+	inline uint8_t get_offset() const { return _ptr_offset; }
 	inline void set_offset(uint8_t o) { _ptr_offset = o; }
-	inline uint8_t get_alignment() const { return 1; }
+	inline uint8_t get_alignment() const { return _aligment; }
 	inline void set_alignment(uint8_t a) { _aligment = a; }
 private:
 	uint16_t _size = 0;
