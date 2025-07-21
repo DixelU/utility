@@ -239,8 +239,8 @@ private:
 
 		std::unique_lock<std::mutex> locker(_state->_locker);
 
-		--_state->_promisesCount;
-		if(_state->_promisesCount == 0 && _state->_status == state::status::yet_empty)
+		size_t new_count = --_state->_promisesCount;
+		if(new_count == 0 && _state->_status == state::status::yet_empty)
 			_state->_status = state::status::spoiled;
 		if(!_waitless)
 			_state->_cond.notify_all();
@@ -348,10 +348,6 @@ template<typename T>
 using shared_waitless_promise = spoilable_future::promise<T, true, true, false>;
 template<typename T>
 using shared_waitless_future = spoilable_future::future<T, true, true, false>;
-template<typename T>
-using shared_promise = spoilable_future::promise<T, true, false, false>;
-template<typename T>
-using shared_future = spoilable_future::future<T, true, false, false>;
 template<typename T>
 using shared_promise = spoilable_future::promise<T, true, false, false>;
 template<typename T>
