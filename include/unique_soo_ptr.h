@@ -1,6 +1,7 @@
 #ifndef DIXELU_UNIQUE_SOO_PTR_H
 #define DIXELU_UNIQUE_SOO_PTR_H
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 
@@ -91,12 +92,12 @@ struct soo_ptr_alignment_handler<true>
 	inline void set_size(uint16_t s) { _size = s; }
 	inline uint8_t get_offset() const { return _ptr_offset; }
 	inline void set_offset(uint8_t o) { _ptr_offset = o; }
-	inline uint8_t get_alignment() const { return _aligment; }
-	inline void set_alignment(uint8_t a) { _aligment = a; }
+	inline uint8_t get_alignment() const { return _alignment; }
+	inline void set_alignment(uint8_t a) { _alignment = a; }
 private:
 	uint16_t _size = 0;
 	uint8_t _ptr_offset = 0;
-	uint8_t _aligment = 0;
+	uint8_t _alignment = 0;
 };
 
 template<>
@@ -114,7 +115,7 @@ template<typename base_type, size_t buffer_size, bool with_superaligned_data>
 struct type_erased_soo_ptr:
 	protected soo_ptr_alignment_handler<with_superaligned_data>
 {
-	// size of object is of size of cache line?
+	// the size of an object is of size of the cache line?
 	constexpr static size_t expected_size = 64;
 	constexpr static size_t possible_buffer_size =
 		expected_size -
@@ -360,8 +361,8 @@ private:
 	inline static bool __can_be_soo_optimised()
 	{
 		constexpr size_t size = sizeof(U);
-		constexpr size_t aligment = alignof(U);
-		return buffer_size >= size && aligment <= alignof(type_erased_soo_ptr);
+		constexpr size_t alignment = alignof(U);
+		return buffer_size >= size && alignment <= alignof(type_erased_soo_ptr);
 	}
 public:
 
@@ -381,7 +382,9 @@ public:
 } // __spec_ptr
 
 template<typename base_type, size_t buffer_size>
-using unique_soo_ptr = __spec_ptr::type_erased_soo_ptr<base_type, buffer_size>;
+using unique_soo_ptr = __spec_ptr::type_erased_soo_ptr<base_type, buffer_size, true>;
+template<typename base_type, size_t buffer_size>
+using unique_soo_ptr_unsafe = __spec_ptr::type_erased_soo_ptr<base_type, buffer_size, false>;
 
 } // dixelu
 
