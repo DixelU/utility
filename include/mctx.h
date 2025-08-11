@@ -143,7 +143,7 @@ using adj_mf_ops::COPY_TYPE_NAME;
 using adj_mf_ops::ALLOCATE;
 using adj_mf_ops::DEALLOCATE;
 
-/* returns hash ID, calls one of instantiated subroutines to
+/* Returns hash ID, calls one of instantiated subroutines to
  * perform a type-specific operation.
  * Possible to expand later on?
  */
@@ -205,7 +205,7 @@ class custom_head final
 
 public:
 	template<class T>
-	custom_head(T&& value) :
+	custom_head(T&& value) requires (!std::is_same_v<std::remove_cvref_t<T>, custom_head>) :
 		data(nullptr),
 		mf(mfunc<std::remove_cvref_t<T>>)
 	{
@@ -247,6 +247,9 @@ public:
 
 	custom_head& operator=(const custom_head& lhs)
 	{
+		if (&lhs == this)
+			return *this;
+
 		this->reset(lhs.mf);
 
 		lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
@@ -255,7 +258,7 @@ public:
 		return *this;
 	}
 
-	void swap(custom_head& lhs)
+	void swap(custom_head& lhs) noexcept
 	{
 		std::swap(lhs.data, this->data);
 		std::swap(lhs.mf, this->mf);
@@ -324,7 +327,7 @@ public:
 		throw std::runtime_error("Bad as<T>() const call");
 	}
 
-	const char* get_type_name() const
+	[[nodiscard]] const char* get_type_name() const
 	{
 		auto res = "";
 		this->mf(reinterpret_cast<void*>(&res), nullptr, COPY_TYPE_NAME);
@@ -420,7 +423,7 @@ public:
 	mctx(std::string&& v);
 
 	mctx(const mctx& v);
-	mctx(mctx&& v);
+	mctx(mctx&& v) noexcept;
 
 	mctx& operator=(const mctx&);
 	mctx& operator=(mctx&&) noexcept;
@@ -440,10 +443,10 @@ public:
 	[[nodiscard]] T get(T default_value) const;
 
 	template<typename T>
-	[[nodiscard]] const details::as_res<T>::type& as() const;
+	[[nodiscard]] const typename details::as_res<T>::type& as() const;
 
 	template<typename T>
-	[[nodiscard]] details::as_res<T>::type& as();
+	[[nodiscard]] typename details::as_res<T>::type& as();
 
 	[[nodiscard]] bool is_none() const;
 
@@ -475,8 +478,8 @@ public:
 	mctx& operator[](size_t index);
 	const mctx& operator[](size_t index) const;
 
-	const mctx& at(const std::string& key) const;
-	const mctx& at(size_t index) const;
+	[[nodiscard]] const mctx& at(const std::string& key) const;
+	[[nodiscard]] const mctx& at(size_t index) const;
 	mctx& at(const std::string& key);
 	mctx& at(size_t index);
 
@@ -536,7 +539,7 @@ public:
 	value_iter& __erase(T& target) requires std::is_same_v<T, mctx::array> || std::is_same_v<T, mctx::object>;
 
 private:
-	mctx* access() const;
+	[[nodiscard]] mctx* access() const;
 };
 
 class mctx::key_value_iter
@@ -596,7 +599,7 @@ inline mctx::mctx(std::string v) : var(std::move(v)) {}
 inline mctx::mctx(std::string&& v) : var(std::move(v)) {}
 
 inline mctx::mctx(const mctx& v) = default;
-inline mctx::mctx(mctx&& v) = default;
+inline mctx::mctx(mctx&& v) noexcept = default;
 
 inline mctx& mctx::operator=(const mctx& v) = default;
 inline mctx& mctx::operator=(mctx&& v) noexcept = default;
@@ -938,9 +941,9 @@ mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T
 	value_iter new_self;
 
 	std::visit(details::overloaded{
-		[&](T::iterator it) { new_self = value_iter{target.erase(it)}; },
-		[&](T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
-		[](auto) { throw std::runtime_error("Bad erase call"); }
+		[&](typename T::iterator it) { new_self = value_iter{target.erase(it)}; },
+		[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
+		[](const auto&) { throw std::runtime_error("Bad erase call"); }
 	}, this->val);
 
 	return *this = std::move(new_self);
@@ -953,12 +956,12 @@ inline mctx* mctx::value_iter::access() const
 	std::visit(details::overloaded{
 		[&contained](array::iterator it) { contained = &*it; },
 		[&contained](array::const_iterator it) { contained = const_cast<mctx*>(&*it); },
-		[&contained](array::reverse_iterator it) { contained = &*it; },
-		[&contained](array::const_reverse_iterator it) { contained = const_cast<mctx*>(&*it); },
+		[&contained](const array::reverse_iterator& it) { contained = &*it; },
+		[&contained](const array::const_reverse_iterator& it) { contained = const_cast<mctx*>(&*it); },
 		[&contained](object::iterator it) { contained = &it->second; },
 		[&contained](object::const_iterator it) { contained = const_cast<mctx*>(&it->second); },
-		[&contained](object::reverse_iterator it) { contained = &it->second; },
-		[&contained](object::const_reverse_iterator it) { contained = const_cast<mctx*>(&it->second); }
+		[&contained](const object::reverse_iterator& it) { contained = &it->second; },
+		[&contained](const object::const_reverse_iterator& it) { contained = const_cast<mctx*>(&it->second); }
 	}, this->val);
 
 	return contained;
@@ -1021,7 +1024,7 @@ inline mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
 	std::visit(details::overloaded{
 		[&](object::iterator it) { new_self = key_value_iter{target.erase(it)}; },
 		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it)}; },
-		[](auto) { throw std::runtime_error("Bad erase call"); }
+		[](const auto&) { throw std::runtime_error("Bad erase call"); }
 	}, this->val);
 
 	return *this = std::move(new_self);
@@ -1029,14 +1032,14 @@ inline mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
 
 inline mctx::object::value_type* mctx::key_value_iter::access() const
 {
-	using acessed = object::value_type;
-	acessed* contained;
+	using accessed = object::value_type;
+	accessed* contained;
 
 	std::visit(details::overloaded{
 		[&contained](object::iterator it) { contained = &*it; },
-		[&contained](object::const_iterator it) { contained = const_cast<acessed*>(&*it); },
-		[&contained](object::reverse_iterator it) { contained = &*it; },
-		[&contained](object::const_reverse_iterator it) { contained = const_cast<acessed*>(&*it); }
+		[&contained](object::const_iterator it) { contained = const_cast<accessed*>(&*it); },
+		[&contained](const object::reverse_iterator& it) { contained = &*it; },
+		[&contained](const object::const_reverse_iterator& it) { contained = const_cast<accessed*>(&*it); }
 	}, this->val);
 
 	return contained;
