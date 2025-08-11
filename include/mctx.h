@@ -168,19 +168,19 @@ size_t mfunc(void* ptr, void* ptr2, adj_mf_ops adjacent_operation)
 		}
 		case COPY_TYPE_NAME:
 		{
-			auto static_string_buffer = (const char**)ptr;
+			auto static_string_buffer = static_cast<const char**>(ptr);
 			*static_string_buffer = type_name;
 			break;
 		}
 		case ALLOCATE:
 		{
-			auto static_data_buffer = (T**)ptr;
-			*ptr = alloc.allocate(1);
+			auto static_data_buffer = static_cast<T**>(ptr);
+			*static_data_buffer = alloc.allocate(1);
 			break;
 		}
 		case DEALLOCATE:
 		{
-			alloc.deallocate(ptr, 1);
+			alloc.deallocate(static_cast<T*>(ptr), 1);
 			break;
 		}
 		default:
@@ -207,10 +207,10 @@ public:
 	template<class T>
 	constexpr custom_head(T&& value):
 		data(nullptr),
-		mf(mfunc<T>)
+		mf(mfunc<std::remove_cvref_t<T>>)
 	{
 		this->mf(&this->data, nullptr, ALLOCATE);
-		data = new (static_cast<T*>(this->data)) std::remove_cv_t<T>(std::forward<T>(value));
+		data = new (static_cast<std::remove_cvref_t<T>*>(this->data)) std::remove_cvref_t<T>(std::forward<T>(value));
 	}
 
 	constexpr custom_head():
@@ -248,7 +248,7 @@ public:
 	constexpr custom_head& operator=(const custom_head& lhs)
 	{
 		this->reset(lhs.mf);
-		
+
 		lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
 		lhs.mf(lhs.data, this->data, EMPLACE_COPY);
 
@@ -278,7 +278,7 @@ public:
 	{
 		if (this->mf)
 			this->mf(data, nullptr, NONE);
-		
+
 		this->reset();
 	}
 
@@ -311,7 +311,7 @@ public:
 	{
 		if (this->is<T>())
 			return *static_cast<const T*>(data);
-		
+
 		throw std::runtime_error("Bad as<T>() const call");
 	}
 
@@ -348,226 +348,49 @@ public:
 	}
 };
 
+template<typename T>
+using possible_integral_alternative =
+	std::conditional_t<std::is_integral_v<T> && (!std::is_same_v<bool, T>), uint64_t, T>;
+
+template<typename T>
+struct as_res
+{
+	using U = possible_integral_alternative<T>;
+	constexpr static bool enable_type_punning = !std::is_same_v<U, T>;
+
+	using type = std::conditional_t<enable_type_punning, T, U>;
+};
+
+template<typename T, typename Variant>
+struct is_in_variant : std::false_type {};
+
+template<typename T, typename... Ts>
+struct is_in_variant<T, std::variant<Ts...>>
+    : std::bool_constant<(std::is_same_v<std::remove_cvref_t<T>, std::remove_cvref_t<Ts>> || ...)> {};
+
+template<typename T, typename Variant>
+inline constexpr bool is_in_variant_v = is_in_variant<T, Variant>::value;
+
 }
+
+class mctx;
+
+using mctx_array = std::vector<mctx>;
+using mctx_object = std::map<std::string, mctx>;
 
 class mctx
 {
-	using object = std::map<std::string, mctx>;
-	using array = std::vector<mctx>;
+	using object = mctx_object;
+	using array = mctx_array;
 	using string = std::string;
 	using custom = details::custom_head;
-
-	template<typename T>
-	using possible_integral_alternative =
-		std::conditional_t<std::is_integral_v<T> && !std::is_same_v<bool, T>, uint64_t, T>;
-public:
-
-	class value_iter
-	{
-		using iter_value = 
-			std::variant<
-				array::iterator,
-				array::const_iterator,
-				array::reverse_iterator,
-				array::const_reverse_iterator,
-				object::iterator,
-				object::const_iterator,
-				object::reverse_iterator,
-				object::const_reverse_iterator>;
-
-		iter_value val;
-
-	public:
-
-		value_iter() = default;
-		value_iter(const value_iter&) = default;
-		value_iter(value_iter&&) noexcept = default;
-
-		value_iter& operator=(const value_iter&) = default;
-		value_iter& operator=(value_iter&&) noexcept = default;
-
-		explicit value_iter(iter_value v): val(std::move(v)) {}
-
-		value_iter& operator++()
-		{
-			std::visit([](auto&& arg) { ++arg; }, this->val);
-			return *this;
-		}
-
-		value_iter operator++(int)
-		{
-			auto prev = *this;
-			this->operator++();
-			return prev;
-		}
-
-		value_iter& operator--()
-		{
-			std::visit([](auto&& arg) { --arg; }, this->val);
-			return *this;
-		}
-
-		value_iter operator--(int)
-		{
-			auto prev = *this;
-			this->operator--();
-			return prev;
-		}
-
-		const mctx& operator*() const { return *this->access(); }
-		mctx& operator*() { return *this->access(); }
-		const mctx* operator->() const { return this->access(); }
-		mctx* operator->() { return this->access(); }
-
-		bool operator==(const value_iter& lhs) const
-		{
-			if (this->val.index() != lhs.val.index())
-				return false;
-
-			return this->val == lhs.val;
-		}
-
-		bool operator!=(const value_iter& lhs) const { return !(*this == lhs); }
-
-		template<typename T>
-		value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>
-		{
-			value_iter new_self;
-
-			std::visit(details::overloaded{
-				[&](T::iterator it) { new_self = value_iter{target.erase(it)}; },
-				[&](T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
-				[](auto) { throw std::runtime_error("Bad erase call"); }
-			}, this->val);
-
-			//this->val = std::move(new_self.val);
-			return *this;
-		}
-
-	private:
-		mctx* access() const
-		{
-			mctx* contained;
-
-			// const correctness violated so hard i'm a;sdkaksdlka
-			std::visit(details::overloaded{
-				[&contained](array::iterator it) { contained = const_cast<mctx*>(&*it);; },
-				[&contained](array::const_iterator it) { contained = const_cast<mctx*>(&*it); },
-				[&contained](array::reverse_iterator it) { contained = const_cast<mctx*>(&*it); },
-				[&contained](array::const_reverse_iterator it) { contained = const_cast<mctx*>(&*it); },
-				[&contained](object::iterator it) { contained = const_cast<mctx*>(&it->second);; },
-				[&contained](object::const_iterator it) { contained = const_cast<mctx*>(&it->second); },
-				[&contained](object::reverse_iterator it) { contained = const_cast<mctx*>(&it->second); },
-				[&contained](object::const_reverse_iterator it) { contained = const_cast<mctx*>(&it->second); }
-			}, this->val);
-
-			return contained;
-		}
-
-	};
-
-	class key_value_iter
-	{
-		using iter_value =
-			std::variant<
-				object::iterator,
-				object::const_iterator,
-				object::reverse_iterator,
-				object::const_reverse_iterator>;
-
-		iter_value val;
-
-	public:
-
-		key_value_iter() = default;
-		key_value_iter(const key_value_iter&) = default;
-		key_value_iter(key_value_iter&&) noexcept = default;
-
-		key_value_iter& operator=(const key_value_iter&) = default;
-		key_value_iter& operator=(key_value_iter&&) noexcept = default;
-
-		key_value_iter(iter_value v) : val(std::move(v)) {}
-
-		key_value_iter& operator++()
-		{
-			std::visit([](auto&& arg) { ++arg; }, this->val);
-			return *this;
-		}
-
-		key_value_iter operator++(int)
-		{
-			auto prev = *this;
-			this->operator++();
-			return prev;
-		}
-
-		key_value_iter& operator--()
-		{
-			std::visit([](auto&& arg) { --arg; }, this->val);
-			return *this;
-		}
-
-		key_value_iter operator--(int)
-		{
-			auto prev = *this;
-			this->operator--();
-			return prev;
-		}
-
-		const object::value_type& operator*() const { return *this->access(); }
-		object::value_type& operator*() { return *this->access(); }
-		const object::value_type* operator->() const { return this->access(); }
-		object::value_type* operator->() { return this->access(); }
-
-		bool operator==(const key_value_iter& lhs) const
-		{
-			if (this->val.index() != lhs.val.index())
-				return false;
-
-			return this->val == lhs.val;
-		}
-
-		bool operator!=(const value_iter& lhs) const { return !(*this == lhs); }
-
-		key_value_iter& __erase(object& target)
-		{
-			key_value_iter new_self;
-
-			std::visit(details::overloaded{
-				[&](object::iterator it) { new_self = key_value_iter{target.erase(it)}; },
-				[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it)}; },
-				[](auto) { throw std::runtime_error("Bad erase call"); }
-			}, this->val);
-
-			this->val = std::move(new_self.val);
-			return *this;
-		}
-
-	private:
-		[[nodiscard]] object::value_type* access() const
-		{
-			using acessed = object::value_type;
-			acessed* contained;
-
-			// const correctness violated so hard i'm a;sdkaksdlka
-			std::visit(details::overloaded{
-				[&contained](object::iterator it) { contained = const_cast<acessed*>(&*it); },
-				[&contained](object::const_iterator it) { contained = const_cast<acessed*>(&*it); },
-				[&contained](object::reverse_iterator it) { contained = const_cast<acessed*>(&*it); },
-				[&contained](object::const_reverse_iterator it) { contained = const_cast<acessed*>(&*it); }
-			}, this->val);
-
-			return contained;
-		}
-
-	};
 
 	using value =
 		std::variant<
 			std::monostate,
 			bool,
 			uint64_t,
-			float, 
+			float,
 			double,
 			string,
 			custom,
@@ -575,269 +398,634 @@ public:
 			object
 		>;
 
-	constexpr mctx() = default;
+	mctx(custom v);
+
+public:
+
+	class value_iter;
+	class key_value_iter;
+
+	mctx();
 
 	template<typename T>
-	constexpr mctx(T&& v) requires std::is_integral_v<T> && (!std::is_same_v<bool, T>):
-		var(static_cast<uint64_t>( static_cast<typename details::try_unsigned<T>::type>(v))) { }
+	mctx(T&& v) requires std::is_integral_v<T> && (!std::is_same_v<bool, T>);
 
-	constexpr mctx(bool v) : var(v) {};
-	constexpr mctx(double v): var(v) {};
-	constexpr mctx(float v) : var(v) {};
+	mctx(bool v);
+	mctx(double v);
+	mctx(float v);
 
-	constexpr mctx(const char* v): var(string(v)) {}
-	
-	constexpr mctx(std::string v): var(std::move(v)) {}
-	constexpr mctx(std::string&& v): var(std::move(v)) {}
+	mctx(const char* v);
 
-	constexpr mctx(const mctx& v): var(v.var) {}
-	constexpr mctx(mctx&& v): var(std::move(v.var)) {}
+	mctx(std::string v);
+	mctx(std::string&& v);
 
-	constexpr mctx(custom v) : var(v) {};
+	mctx(const mctx& v);
+	mctx(mctx&& v);
 
-	[[nodiscard]] bool empty() const
-	{
-		return this->var.index() == 0 || 
-			(std::holds_alternative<array>(this->var) && std::get<array>(this->var).empty()) ||
-			(std::holds_alternative<object>(this->var) && std::get<object>(this->var).empty()) ||
-			(std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).empty());
-	}
+	mctx& operator=(const mctx&);
+	mctx& operator=(mctx&&) noexcept;
 
 	template<typename T>
-	bool is() const
-	{
-		if (std::holds_alternative<custom>(this->var))
-			return std::get<custom>(this->var).is<T>();
-		
-		return std::holds_alternative<possible_integral_alternative<T>>(this->var);
-	}
+	mctx(T v) requires (!std::is_fundamental_v<T>);
+
+	[[nodiscard]] bool empty() const;
 
 	template<typename T>
-	T get() const
-	{
-		if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
-			return std::get<custom>(this->var).get<T>();
-
-		return static_cast<T>(std::get<possible_integral_alternative<T>>(this->var));
-	}
+	[[nodiscard]] bool is() const;
 
 	template<typename T>
-	T get(T default_value) const
-	{
-		if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
-			return std::get<custom>(this->var).get<T>();
+	[[nodiscard]] T get() const;
 
-		const auto* ptr = std::get_if<possible_integral_alternative<T>>(&this->var);
+	template<typename T>
+	[[nodiscard]] T get(T default_value) const;
+
+	template<typename T>
+	[[nodiscard]] const details::as_res<T>::type& as() const;
+
+	template<typename T>
+	[[nodiscard]] details::as_res<T>::type& as();
+
+	[[nodiscard]] bool is_none() const;
+
+	[[nodiscard]] bool is_array() const;
+
+	[[nodiscard]] bool is_object() const;
+
+	[[nodiscard]] value_iter begin() const;
+
+	[[nodiscard]] value_iter end() const;
+
+	[[nodiscard]] value_iter rbegin() const;
+
+	[[nodiscard]] value_iter rend() const;
+
+	[[nodiscard]] value_iter find(const std::string& str) const;
+
+	[[nodiscard]] key_value_iter kvfind(const std::string& str);
+
+	[[nodiscard]] key_value_iter kvbegin() const;
+
+	[[nodiscard]] key_value_iter kvend() const;
+
+	value_iter erase(value_iter iter);
+
+	// Container operations
+	mctx& operator[](const std::string& key);
+
+	mctx& operator[](size_t index);
+	const mctx& operator[](size_t index) const;
+
+	const mctx& at(const std::string& key) const;
+	const mctx& at(size_t index) const;
+	mctx& at(const std::string& key);
+	mctx& at(size_t index);
+
+	void push_back(mctx value);
+
+	[[nodiscard]] size_t size() const;
+
+	void clear();
+
+private:
+	value var;
+};
+
+class mctx::value_iter
+{
+	using iter_value =
+		std::variant<
+			array::iterator,
+			array::const_iterator,
+			array::reverse_iterator,
+			array::const_reverse_iterator,
+			object::iterator,
+			object::const_iterator,
+			object::reverse_iterator,
+			object::const_reverse_iterator>;
+
+	iter_value val;
+
+public:
+
+	value_iter();
+	value_iter(const value_iter&);
+	value_iter(value_iter&&) noexcept;
+
+	value_iter& operator=(const value_iter&);
+	value_iter& operator=(value_iter&&) noexcept;
+
+	explicit value_iter(iter_value v);
+
+	value_iter& operator++();
+	value_iter operator++(int);
+	value_iter& operator--();
+	value_iter operator--(int);
+
+	const mctx& operator*() const;
+	mctx& operator*();
+	const mctx* operator->() const;
+	mctx* operator->();
+
+	bool operator==(const value_iter& lhs) const;
+	bool operator!=(const value_iter& lhs) const;
+
+	template<typename T>
+	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+
+private:
+	mctx* access() const;
+};
+
+class mctx::key_value_iter
+{
+	using iter_value =
+		std::variant<
+			object::iterator,
+			object::const_iterator,
+			object::reverse_iterator,
+			object::const_reverse_iterator>;
+
+	iter_value val;
+
+public:
+
+	key_value_iter();
+	key_value_iter(const key_value_iter&);
+	key_value_iter(key_value_iter&&) noexcept;
+
+	key_value_iter& operator=(const key_value_iter&);
+	key_value_iter& operator=(key_value_iter&&) noexcept;
+
+	key_value_iter(iter_value v);
+
+	key_value_iter& operator++();
+	key_value_iter operator++(int);
+	key_value_iter& operator--();
+	key_value_iter operator--(int);
+
+	const object::value_type& operator*() const;
+	object::value_type& operator*();
+	const object::value_type* operator->() const;
+	object::value_type* operator->();
+
+	bool operator==(const key_value_iter& lhs) const;
+	bool operator!=(const key_value_iter& lhs) const;
+
+	key_value_iter& __erase(object& target);
+
+private:
+	[[nodiscard]] object::value_type* access() const;
+};
+
+inline mctx::mctx() = default;
+
+template<typename T>
+mctx::mctx(T&& v) requires std::is_integral_v<T> && (!std::is_same_v<bool, T>):
+	var(static_cast<uint64_t>( static_cast<typename details::try_unsigned<T>::type>(v))) { }
+
+inline mctx::mctx(bool v) : var(v) {}
+inline mctx::mctx(double v): var(v) {}
+inline mctx::mctx(float v) : var(v) {}
+
+inline mctx::mctx(const char* v): var(string(v)) {}
+
+inline mctx::mctx(std::string v): var(std::move(v)) {}
+inline mctx::mctx(std::string&& v): var(std::move(v)) {}
+
+inline mctx::mctx(const mctx& v) = default;
+inline mctx::mctx(mctx&& v) = default;
+
+inline mctx& mctx::operator=(const mctx& v) = default;
+inline mctx& mctx::operator=(mctx&& v) noexcept = default;
+
+inline mctx::mctx(custom v) : var(std::move(v)) {}
+
+inline bool mctx::empty() const
+{
+	return this->var.index() == 0 ||
+		(std::holds_alternative<array>(this->var) && std::get<array>(this->var).empty()) ||
+		(std::holds_alternative<string>(this->var) && std::get<string>(this->var).empty()) ||
+		(std::holds_alternative<object>(this->var) && std::get<object>(this->var).empty()) ||
+		(std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).empty());
+}
+
+template <typename T>
+mctx::mctx(T v) requires (!std::is_fundamental_v<T>) :
+	var(custom{v}) {}
+
+
+template<typename T>
+bool mctx::is() const
+{
+	if (std::holds_alternative<custom>(this->var))
+		return std::get<custom>(this->var).is<T>();
+
+	using U = details::possible_integral_alternative<T>;
+	if constexpr ( details::is_in_variant_v<U, decltype(this->var)> )
+		return std::holds_alternative<U>(this->var);
+
+	return false;
+}
+
+template<typename T>
+T mctx::get() const
+{
+	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
+		return std::get<custom>(this->var).get<T>();
+
+	using U = details::possible_integral_alternative<T>;
+	if constexpr ( details::is_in_variant_v<U, decltype(this->var)> )
+		return static_cast<T>(std::get<U>(this->var));
+
+	return T();
+}
+
+template<typename T>
+T mctx::get(T default_value) const
+{
+	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
+		return std::get<custom>(this->var).get<T>();
+
+	using U = details::possible_integral_alternative<T>;
+	if constexpr (!details::is_in_variant_v<U, decltype(this->var)>)
+		return default_value;
+	else
+	{
+		const auto* ptr = std::get_if<details::possible_integral_alternative<T>>(&this->var);
 		if (ptr == nullptr)
 			return default_value;
 
 		return static_cast<T>(*ptr);
 	}
+}
 
-	template<typename T>
-	[[nodiscard]] const T& as() const
+template<typename T>
+const typename details::as_res<T>::type& mctx::as() const
+{
+	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
+		return std::get<custom>(this->var).as<T>();
+
+	using U = details::possible_integral_alternative<T>;
+	if constexpr (!details::is_in_variant_v<U, decltype(this->var)>)
+		throw std::runtime_error("Bad as<T> const call ");
+	else
 	{
-		using U = possible_integral_alternative<T>;
-		constexpr bool enable_type_punning = !std::is_same_v<U, T>;
-
-		if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
-			return std::get<custom>(this->var).as<T>();
-
-		const auto* ptr = std::get_if<U>(&this->var);
+		const auto* ptr = std::get_if<typename details::as_res<T>::U>(&this->var);
 		if (ptr == nullptr)
 			throw std::runtime_error("Bad as<T> const call");
 
-		if constexpr (enable_type_punning)
+		if constexpr (details::as_res<T>::enable_type_punning)
 			return *reinterpret_cast<const T*>(ptr);
-
-		return *ptr;
+		else
+			return *ptr;
 	}
+}
 
-	template<typename T>
-	T& as()
+template<typename T>
+typename details::as_res<T>::type& mctx::as()
+{
+	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
+		return std::get<custom>(this->var).as<T>();
+
+	if constexpr (!details::is_in_variant_v<typename details::as_res<T>::U, decltype(this->var)>)
+		throw std::runtime_error("Bad as<T> const call ");
+	else
 	{
-		using U = possible_integral_alternative<T>;
-		constexpr bool enable_type_punning = !std::is_same_v<U, T>;
-
-		if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
-			return std::get<custom>(this->var).as<T>();
-
-		auto* ptr = std::get_if<U>(&this->var);
+		auto* ptr = std::get_if<typename details::as_res<T>::U>(&this->var);
 		if (ptr == nullptr)
-			throw std::runtime_error("Bad as<T> const call");
+			throw std::runtime_error("Bad as<T> call");
 
-		if constexpr (enable_type_punning)
+		if constexpr (details::as_res<T>::enable_type_punning)
 			return *reinterpret_cast<T*>(ptr);
-
-		return *ptr;
+		else
+			return *ptr;
 	}
+}
 
-	[[nodiscard]] bool is_none() const
-	{
-		return this->var.index() == 0;
-	}
+inline bool mctx::is_none() const
+{
+	return this->var.index() == 0;
+}
 
-	[[nodiscard]] bool is_array() const
-	{
-		return std::holds_alternative<array>(this->var);
-	}
+inline bool mctx::is_array() const
+{
+	return std::holds_alternative<array>(this->var);
+}
 
-	[[nodiscard]] bool is_object() const
-	{
-		return std::holds_alternative<object>(this->var);
-	}
+inline bool mctx::is_object() const
+{
+	return std::holds_alternative<object>(this->var);
+}
 
-	[[nodiscard]] value_iter begin() const
-	{
-		value_iter it;
-		
-		std::visit(details::overloaded{
-			[&it](const array& a) { it = value_iter{a.begin()}; },
-			[&it](const object& o) { it = value_iter{o.begin()}; },
-			[](const auto &) -> void { }
-		}, this->var);
+inline mctx::value_iter mctx::begin() const
+{
+	value_iter it;
 
-		return it;
-	}
+	std::visit(details::overloaded{
+		[&it](const array& a) { it = value_iter{a.begin()}; },
+		[&it](const object& o) { it = value_iter{o.begin()}; },
+		[](const auto &) -> void { }
+	}, this->var);
 
-	[[nodiscard]] value_iter end() const
-	{
-		value_iter it;
+	return it;
+}
 
-		std::visit(details::overloaded{
-			[&it](const array& a) { it = value_iter{a.end()}; },
-			[&it](const object& o) { it = value_iter{o.end()}; },
-			[](const auto&) -> void {}
-		}, this->var);
+inline mctx::value_iter mctx::end() const
+{
+	value_iter it;
 
-		return it;
-	}
-	
-	[[nodiscard]] value_iter rbegin() const
-	{
-		value_iter it;
+	std::visit(details::overloaded{
+		[&it](const array& a) { it = value_iter{a.end()}; },
+		[&it](const object& o) { it = value_iter{o.end()}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[&it](const array& a) { it = value_iter{a.rbegin()}; },
-			[&it](const object& o) { it = value_iter{o.rbegin()}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::value_iter mctx::rbegin() const
+{
+	value_iter it;
 
-	[[nodiscard]] value_iter rend() const
-	{
-		value_iter it;
+	std::visit(details::overloaded{
+		[&it](const array& a) { it = value_iter{a.rbegin()}; },
+		[&it](const object& o) { it = value_iter{o.rbegin()}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[&it](const array& a) { it = value_iter{a.rend()}; },
-			[&it](const object& o) { it = value_iter{o.rend()}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::value_iter mctx::rend() const
+{
+	value_iter it;
 
-	[[nodiscard]] value_iter find(const std::string& str) const
-	{
-		value_iter it;
+	std::visit(details::overloaded{
+		[&it](const array& a) { it = value_iter{a.rend()}; },
+		[&it](const object& o) { it = value_iter{o.rend()}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[](const array&) { throw std::runtime_error("find is not defined for array"); },
-			[&](const object& o) { it = value_iter{o.find(str)}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::value_iter mctx::find(const std::string& str) const
+{
+	value_iter it;
 
-	[[nodiscard]] key_value_iter kvfind(const std::string& str)
-	{
-		key_value_iter it;
+	std::visit(details::overloaded{
+		[](const array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](const object& o) { it = value_iter{o.find(str)}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[](const array&) { throw std::runtime_error("find is not defined for array"); },
-			[&](const object& o) { it = key_value_iter{o.find(str)}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::key_value_iter mctx::kvfind(const std::string& str)
+{
+	key_value_iter it;
 
-	[[nodiscard]] key_value_iter kvbegin() const
-	{
-		key_value_iter it;
+	std::visit(details::overloaded{
+		[](const array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](const object& o) { it = key_value_iter{o.find(str)}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[](const array&) { throw std::runtime_error("find is not defined for array"); },
-			[&](const object& o) { it = key_value_iter{o.begin()}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::key_value_iter mctx::kvbegin() const
+{
+	key_value_iter it;
 
-	[[nodiscard]] key_value_iter kvend() const
-	{
-		key_value_iter it;
+	std::visit(details::overloaded{
+		[](const array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](const object& o) { it = key_value_iter{o.begin()}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		std::visit(details::overloaded{
-			[](const array&) { throw std::runtime_error("find is not defined for array"); },
-			[&](const object& o) { it = key_value_iter{o.end()}; },
-			[](const auto&) -> void {}
-		}, this->var);
+	return it;
+}
 
-		return it;
-	}
+inline mctx::key_value_iter mctx::kvend() const
+{
+	key_value_iter it;
 
-	value_iter erase(value_iter iter)
-	{
-		value_iter after;
+	std::visit(details::overloaded{
+		[](const array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](const object& o) { it = key_value_iter{o.end()}; },
+		[](const auto&) -> void {}
+	}, this->var);
 
-		auto array_erase = [&](array& a) { after = iter.__erase(a); };
-		auto object_erase = [&](object& a) { after = iter.__erase(a); };
+	return it;
+}
 
-		std::visit(details::overloaded{
-			 array_erase, object_erase,
-		[](const auto&) -> void {} }, this->var);
+inline mctx::value_iter mctx::erase(value_iter iter)
+{
+	value_iter after;
 
-		return after;
-	}
+	auto array_erase = [&](array& a) { after = iter.__erase(a); };
+	auto object_erase = [&](object& o) { after = iter.__erase(o); };
 
-	// Container operations
-	mctx& operator[](const std::string& key)
-	{
-		if (this->is_none())
-			this->var = object{};
+	std::visit(details::overloaded{
+		 array_erase, object_erase,
+	[](const auto&) -> void {} }, this->var);
 
-		return this->as<object>()[key];
-	}
+	return after;
+}
 
-	mctx& operator[](size_t index) { return this->as<array>()[index]; }
-	const mctx& operator[](size_t index) const { return this->as<array>()[index]; }
+inline mctx& mctx::operator[](const std::string& key)
+{
+	if (this->is_none())
+		this->var = object{};
 
-	[[nodiscard]] const mctx& at(const std::string& key) const { return this->as<object>().at(key); }
-	[[nodiscard]] const mctx& at(size_t index) const { return this->as<array>().at(index); };
+	return this->as<object>()[key];
+}
 
-	void push_back(mctx value) { this->as<array>().push_back(std::move(value)); }
-	
-	[[nodiscard]] size_t size() const
-	{
-		size_t size = 0;
+inline mctx& mctx::operator[](size_t index) { return this->as<array>()[index]; }
+inline const mctx& mctx::operator[](size_t index) const { return this->as<array>()[index]; }
 
-		std::visit(details::overloaded{
-			[&size](const array& a) { size = a.size(); },
-			[&size](const object& o) { size = o.size(); },
-			[](const std::monostate&) { },
-			[](const auto&) -> void { throw std::runtime_error("size is not defined for scalars"); }
-		}, this->var);
+inline const mctx& mctx::at(const std::string& key) const { return this->as<object>().at(key); }
+inline const mctx& mctx::at(size_t index) const { return this->as<array>().at(index); }
 
-		return size;
-	}
+inline mctx& mctx::at(const std::string& key) { return this->as<object>().at(key); }
+inline mctx& mctx::at(size_t index) { return this->as<array>().at(index); }
 
-	void clear() { this->var = std::monostate{}; }
+inline void mctx::push_back(mctx value) { this->as<array>().push_back(std::move(value)); }
 
-private:
-	value var;
-};
+inline size_t mctx::size() const
+{
+	size_t size = 0;
+
+	std::visit(details::overloaded{
+		[&size](const array& a) { size = a.size(); },
+		[&size](const object& o) { size = o.size(); },
+		[](const std::monostate&) { },
+		[](const auto&) -> void { throw std::runtime_error("size is not defined for scalars"); }
+	}, this->var);
+
+	return size;
+}
+
+inline void mctx::clear() { this->var = std::monostate{}; }
+
+inline mctx::value_iter::value_iter() = default;
+inline mctx::value_iter::value_iter(const value_iter&) = default;
+inline mctx::value_iter::value_iter(value_iter&&) noexcept = default;
+
+inline mctx::value_iter& mctx::value_iter::operator=(const value_iter&) = default;
+inline mctx::value_iter& mctx::value_iter::operator=(value_iter&&) noexcept = default;
+
+inline mctx::value_iter::value_iter(iter_value v): val(std::move(v)) {}
+
+inline mctx::value_iter& mctx::value_iter::operator++()
+{
+	std::visit([](auto&& arg) { ++arg; }, this->val);
+	return *this;
+}
+
+inline mctx::value_iter mctx::value_iter::operator++(int)
+{
+	auto prev = *this;
+	this->operator++();
+	return prev;
+}
+
+inline mctx::value_iter& mctx::value_iter::operator--()
+{
+	std::visit([](auto&& arg) { --arg; }, this->val);
+	return *this;
+}
+
+inline mctx::value_iter mctx::value_iter::operator--(int)
+{
+	auto prev = *this;
+	this->operator--();
+	return prev;
+}
+
+inline const mctx& mctx::value_iter::operator*() const { return *this->access(); }
+inline mctx& mctx::value_iter::operator*() { return *this->access(); }
+inline const mctx* mctx::value_iter::operator->() const { return this->access(); }
+inline mctx* mctx::value_iter::operator->() { return this->access(); }
+
+inline bool mctx::value_iter::operator==(const value_iter& lhs) const
+{
+	if (this->val.index() != lhs.val.index())
+		return false;
+
+	return this->val == lhs.val;
+}
+
+inline bool mctx::value_iter::operator!=(const value_iter& lhs) const { return !(*this == lhs); }
+
+template<typename T>
+mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, mctx::array> || std::is_same_v<T, mctx::object>
+{
+	value_iter new_self;
+
+	std::visit(details::overloaded{
+		[&](T::iterator it) { new_self = value_iter{target.erase(it)}; },
+		[&](T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
+		[](auto) { throw std::runtime_error("Bad erase call"); }
+	}, this->val);
+
+	return *this = std::move(new_self);
+}
+
+inline mctx* mctx::value_iter::access() const
+{
+	mctx* contained;
+
+	std::visit(details::overloaded{
+		[&contained](array::iterator it) { contained = &*it; },
+		[&contained](array::const_iterator it) { contained = const_cast<mctx*>(&*it); },
+		[&contained](array::reverse_iterator it) { contained = &*it; },
+		[&contained](array::const_reverse_iterator it) { contained = const_cast<mctx*>(&*it); },
+		[&contained](object::iterator it) { contained = &it->second; },
+		[&contained](object::const_iterator it) { contained = const_cast<mctx*>(&it->second); },
+		[&contained](object::reverse_iterator it) { contained = &it->second; },
+		[&contained](object::const_reverse_iterator it) { contained = const_cast<mctx*>(&it->second); }
+	}, this->val);
+
+	return contained;
+}
+
+inline mctx::key_value_iter::key_value_iter() = default;
+inline mctx::key_value_iter::key_value_iter(const key_value_iter&) = default;
+inline mctx::key_value_iter::key_value_iter(key_value_iter&&) noexcept = default;
+
+inline mctx::key_value_iter& mctx::key_value_iter::operator=(const key_value_iter&) = default;
+inline mctx::key_value_iter& mctx::key_value_iter::operator=(key_value_iter&&) noexcept = default;
+
+inline mctx::key_value_iter::key_value_iter(iter_value v) : val(std::move(v)) {}
+
+inline mctx::key_value_iter& mctx::key_value_iter::operator++()
+{
+	std::visit([](auto&& arg) { ++arg; }, this->val);
+	return *this;
+}
+
+inline mctx::key_value_iter mctx::key_value_iter::operator++(int)
+{
+	auto prev = *this;
+	this->operator++();
+	return prev;
+}
+
+inline mctx::key_value_iter& mctx::key_value_iter::operator--()
+{
+	std::visit([](auto&& arg) { --arg; }, this->val);
+	return *this;
+}
+
+inline mctx::key_value_iter mctx::key_value_iter::operator--(int)
+{
+	auto prev = *this;
+	this->operator--();
+	return prev;
+}
+
+inline const mctx::object::value_type& mctx::key_value_iter::operator*() const { return *this->access(); }
+inline mctx::object::value_type& mctx::key_value_iter::operator*() { return *this->access(); }
+inline const mctx::object::value_type* mctx::key_value_iter::operator->() const { return this->access(); }
+inline mctx::object::value_type* mctx::key_value_iter::operator->() { return this->access(); }
+
+inline bool mctx::key_value_iter::operator==(const key_value_iter& lhs) const
+{
+	if (this->val.index() != lhs.val.index())
+		return false;
+
+	return this->val == lhs.val;
+}
+
+inline bool mctx::key_value_iter::operator!=(const key_value_iter& lhs) const { return !(*this == lhs); }
+
+inline mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
+{
+	key_value_iter new_self;
+
+	std::visit(details::overloaded{
+		[&](object::iterator it) { new_self = key_value_iter{target.erase(it)}; },
+		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it)}; },
+		[](auto) { throw std::runtime_error("Bad erase call"); }
+	}, this->val);
+
+	return *this = std::move(new_self);
+}
+
+inline mctx::object::value_type* mctx::key_value_iter::access() const
+{
+	using acessed = object::value_type;
+	acessed* contained;
+
+	std::visit(details::overloaded{
+		[&contained](object::iterator it) { contained = &*it; },
+		[&contained](object::const_iterator it) { contained = const_cast<acessed*>(&*it); },
+		[&contained](object::reverse_iterator it) { contained = &*it; },
+		[&contained](object::const_reverse_iterator it) { contained = const_cast<acessed*>(&*it); }
+	}, this->val);
+
+	return contained;
+}
