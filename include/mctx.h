@@ -125,7 +125,6 @@ void emplace_copy(void* from, void* to)
 	new (to) T(*static_cast<T*>(from));
 }
 
-// ¯\_(ツ)_/¯
 enum class adj_mf_ops
 {
 	NONE = 0,
@@ -134,6 +133,7 @@ enum class adj_mf_ops
 	COPY_TYPE_NAME = 3,
 	ALLOCATE = 4,
 	DEALLOCATE = 5,
+	DESTROY = 6
 };
 
 using adj_mf_ops::NONE;
@@ -142,6 +142,7 @@ using adj_mf_ops::COMPARE;
 using adj_mf_ops::COPY_TYPE_NAME;
 using adj_mf_ops::ALLOCATE;
 using adj_mf_ops::DEALLOCATE;
+using adj_mf_ops::DESTROY;
 
 /* Returns hash ID, calls one of instantiated subroutines to
  * perform a type-specific operation.
@@ -150,8 +151,8 @@ using adj_mf_ops::DEALLOCATE;
 template <typename T>
 size_t mfunc(void* ptr, void* ptr2, adj_mf_ops adjacent_operation)
 {
-	static const std::type_info& type_info(typeid(T));
-	static size_t hash_code{ type_info.hash_code() };
+	static const auto& type_info(typeid(T));
+	static const size_t hash_code{ type_info.hash_code() };
 	static const char* type_name{ type_info.name() };
 	static std::allocator<T> alloc{};
 
@@ -181,6 +182,12 @@ size_t mfunc(void* ptr, void* ptr2, adj_mf_ops adjacent_operation)
 		case DEALLOCATE:
 		{
 			alloc.deallocate(static_cast<T*>(ptr), 1);
+			break;
+		}
+		case DESTROY:
+		{
+			if constexpr (!std::is_trivially_destructible_v<T>)
+				static_cast<T*>(ptr)->~T();
 			break;
 		}
 		default:
@@ -238,6 +245,7 @@ public:
 	{
 		if (this->data != nullptr)
 		{
+			this->mf(this->data, nullptr, DESTROY);
 			this->mf(this->data, nullptr, DEALLOCATE);
 			this->data = nullptr;
 		}
@@ -279,9 +287,6 @@ public:
 
 	~custom_head()
 	{
-		if (this->mf)
-			this->mf(data, nullptr, NONE);
-
 		this->reset();
 	}
 
@@ -368,8 +373,8 @@ template<typename T, typename Variant>
 struct is_in_variant : std::false_type {};
 
 template<typename T, typename... Ts>
-struct is_in_variant<T, std::variant<Ts...>>
-    : std::bool_constant<(std::is_same_v<std::remove_cvref_t<T>, std::remove_cvref_t<Ts>> || ...)> {};
+struct is_in_variant<T, std::variant<Ts...>> :
+	std::bool_constant<(std::is_same_v<std::remove_cvref_t<T>, std::remove_cvref_t<Ts>> || ...)> {};
 
 template<typename T, typename Variant>
 inline constexpr bool is_in_variant_v = is_in_variant<T, Variant>::value;
@@ -1044,3 +1049,4 @@ inline mctx::object::value_type* mctx::key_value_iter::access() const
 
 	return contained;
 }
+
