@@ -5,5 +5,8 @@ include_directories(include)
 
 set(CMAKE_CXX_STANDARD 23)
 
+add_compile_options(-fsanitize=address)
+add_link_options(-fsanitize=address)
+
 add_executable(test_x tests/test_x.cpp)
 add_executable(mctx_test tests/mctx_test.cpp)

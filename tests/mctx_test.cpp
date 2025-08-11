@@ -184,6 +184,12 @@ BOOST_AUTO_TEST_CASE(custom_head_test)
 		bool operator==(const MyStruct& other) const { return name == other.name && id == other.id; }
 	};
 
+	struct SmallStruct
+	{
+		uint8_t x;
+		uint8_t y;
+	};
+
 	mctx custom_val = MyStruct{"test", 123};
 	BOOST_CHECK(custom_val.is<MyStruct>());
 
@@ -197,6 +203,11 @@ BOOST_AUTO_TEST_CASE(custom_head_test)
 
 	BOOST_CHECK(custom_val.as<MyStruct>() == custom_val2.as<MyStruct>());
 	BOOST_CHECK(custom_val.as<MyStruct>() != custom_val3.as<MyStruct>());
+
+	mctx small_struct1 = SmallStruct{0x24, 0x35};
+	mctx small_struct2 = SmallStruct{0x24, 0x35};
+
+	BOOST_CHECK(small_struct1.as<SmallStruct>().y == small_struct2.as<SmallStruct>().y);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
