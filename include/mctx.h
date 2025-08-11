@@ -200,12 +200,12 @@ using mf_sig = size_t(*)(void* ptr, void* ptr2, adj_mf_ops adjacent_operation);
 
 class custom_head final
 {
-	void *data;
+	void* data;
 	mf_sig mf;
 
 public:
 	template<class T>
-	constexpr custom_head(T&& value):
+	custom_head(T&& value) :
 		data(nullptr),
 		mf(mfunc<std::remove_cvref_t<T>>)
 	{
@@ -213,12 +213,12 @@ public:
 		data = new (static_cast<std::remove_cvref_t<T>*>(this->data)) std::remove_cvref_t<T>(std::forward<T>(value));
 	}
 
-	constexpr custom_head():
+	custom_head() :
 		data(nullptr),
 		mf(mfunc<std::nullptr_t>)
 	{}
 
-	constexpr custom_head(const custom_head& lhs):
+	custom_head(const custom_head& lhs) :
 		data(nullptr),
 		mf(lhs.mf)
 	{
@@ -226,7 +226,7 @@ public:
 		lhs.mf(lhs.data, this->data, EMPLACE_COPY);
 	}
 
-	constexpr custom_head(custom_head&& lhs) noexcept :
+	custom_head(custom_head&& lhs) noexcept :
 		data(lhs.data),
 		mf(lhs.mf)
 	{
@@ -245,7 +245,7 @@ public:
 		this->mf = new_mf_sig;
 	}
 
-	constexpr custom_head& operator=(const custom_head& lhs)
+	custom_head& operator=(const custom_head& lhs)
 	{
 		this->reset(lhs.mf);
 
@@ -255,13 +255,13 @@ public:
 		return *this;
 	}
 
-	constexpr void swap(custom_head& lhs)
+	void swap(custom_head& lhs)
 	{
 		std::swap(lhs.data, this->data);
 		std::swap(lhs.mf, this->mf);
 	}
 
-	constexpr custom_head& operator=(custom_head&& lhs) noexcept
+	custom_head& operator=(custom_head&& lhs) noexcept
 	{
 		this->reset(lhs.mf);
 		this->swap(lhs);
@@ -269,12 +269,12 @@ public:
 		return *this;
 	}
 
-	[[nodiscard]] constexpr bool empty() const
+	[[nodiscard]] bool empty() const
 	{
 		return data == nullptr;
 	}
 
-	constexpr ~custom_head()
+	~custom_head()
 	{
 		if (this->mf)
 			this->mf(data, nullptr, NONE);
@@ -283,14 +283,14 @@ public:
 	}
 
 	template<typename T>
-	[[nodiscard]] constexpr bool is() const
+	[[nodiscard]] bool is() const
 	{
 		auto hash_id = typeid(T).hash_code();
 		return this->mf(nullptr, nullptr, NONE) == hash_id;
 	}
 
 	template<typename T>
-	constexpr T get() const
+	T get() const
 	{
 		if (this->is<T>())
 			return *static_cast<const T*>(this->data);
@@ -299,7 +299,7 @@ public:
 	}
 
 	template<typename T>
-	constexpr T get(T default_value) const
+	T get(T default_value) const
 	{
 		if (this->is<T>())
 			return *static_cast<const T*>(this->data);
@@ -307,7 +307,7 @@ public:
 	}
 
 	template<typename T>
-	[[nodiscard]] constexpr const T& as() const
+	[[nodiscard]] const T& as() const
 	{
 		if (this->is<T>())
 			return *static_cast<const T*>(data);
@@ -316,7 +316,7 @@ public:
 	}
 
 	template<typename T>
-	[[nodiscard]] constexpr T& as()
+	[[nodiscard]] T& as()
 	{
 		if (this->is<T>())
 			return *static_cast<T*>(data);
@@ -324,14 +324,14 @@ public:
 		throw std::runtime_error("Bad as<T>() const call");
 	}
 
-	constexpr const char* get_type_name() const
+	const char* get_type_name() const
 	{
 		auto res = "";
 		this->mf(reinterpret_cast<void*>(&res), nullptr, COPY_TYPE_NAME);
 		return res;
 	}
 
-	constexpr bool operator==(const custom_head& lhs) const
+	bool operator==(const custom_head& lhs) const
 	{
 		auto this_hash = this->mf(nullptr, nullptr, NONE);
 		auto lhs_hash = lhs.mf(nullptr, nullptr, NONE);
@@ -342,9 +342,9 @@ public:
 		return this->mf(this->data, lhs.data, COMPARE) != 0;
 	}
 
-	constexpr bool operator!=(const custom_head& lhs) const
+	bool operator!=(const custom_head& lhs) const
 	{
-		return !( *this == lhs );
+		return !(*this == lhs);
 	}
 };
 
@@ -533,7 +533,7 @@ public:
 	bool operator!=(const value_iter& lhs) const;
 
 	template<typename T>
-	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+	value_iter& __erase(T& target) requires std::is_same_v<T, mctx::array> || std::is_same_v<T, mctx::object>;
 
 private:
 	mctx* access() const;
@@ -583,17 +583,17 @@ private:
 inline mctx::mctx() = default;
 
 template<typename T>
-mctx::mctx(T&& v) requires std::is_integral_v<T> && (!std::is_same_v<bool, T>):
+mctx::mctx(T&& v) requires std::is_integral_v<T> && (!std::is_same_v<bool, T>) :
 	var(static_cast<uint64_t>( static_cast<typename details::try_unsigned<T>::type>(v))) { }
 
 inline mctx::mctx(bool v) : var(v) {}
-inline mctx::mctx(double v): var(v) {}
+inline mctx::mctx(double v) : var(v) {}
 inline mctx::mctx(float v) : var(v) {}
 
-inline mctx::mctx(const char* v): var(string(v)) {}
+inline mctx::mctx(const char* v) : var(string(v)) {}
 
-inline mctx::mctx(std::string v): var(std::move(v)) {}
-inline mctx::mctx(std::string&& v): var(std::move(v)) {}
+inline mctx::mctx(std::string v) : var(std::move(v)) {}
+inline mctx::mctx(std::string&& v) : var(std::move(v)) {}
 
 inline mctx::mctx(const mctx& v) = default;
 inline mctx::mctx(mctx&& v) = default;
@@ -624,7 +624,7 @@ bool mctx::is() const
 		return std::get<custom>(this->var).is<T>();
 
 	using U = details::possible_integral_alternative<T>;
-	if constexpr ( details::is_in_variant_v<U, decltype(this->var)> )
+	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
 		return std::holds_alternative<U>(this->var);
 
 	return false;
@@ -637,7 +637,7 @@ T mctx::get() const
 		return std::get<custom>(this->var).get<T>();
 
 	using U = details::possible_integral_alternative<T>;
-	if constexpr ( details::is_in_variant_v<U, decltype(this->var)> )
+	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
 		return static_cast<T>(std::get<U>(this->var));
 
 	return T();
@@ -870,7 +870,7 @@ inline size_t mctx::size() const
 	std::visit(details::overloaded{
 		[&size](const array& a) { size = a.size(); },
 		[&size](const object& o) { size = o.size(); },
-		[](const std::monostate&) { },
+		[](const std::monostate&) {},
 		[](const auto&) -> void { throw std::runtime_error("size is not defined for scalars"); }
 	}, this->var);
 
@@ -889,7 +889,7 @@ inline mctx::value_iter::value_iter(value_iter&&) noexcept = default;
 inline mctx::value_iter& mctx::value_iter::operator=(const value_iter&) = default;
 inline mctx::value_iter& mctx::value_iter::operator=(value_iter&&) noexcept = default;
 
-inline mctx::value_iter::value_iter(iter_value v): val(std::move(v)) {}
+inline mctx::value_iter::value_iter(iter_value v) : val(std::move(v)) {}
 
 inline mctx::value_iter& mctx::value_iter::operator++()
 {
