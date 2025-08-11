@@ -691,7 +691,7 @@ typename details::as_res<T>::type& mctx::as()
 		return std::get<custom>(this->var).as<T>();
 
 	if constexpr (!details::is_in_variant_v<typename details::as_res<T>::U, decltype(this->var)>)
-		throw std::runtime_error("Bad as<T> const call ");
+		throw std::runtime_error("Bad as<T> call");
 	else
 	{
 		auto* ptr = std::get_if<typename details::as_res<T>::U>(&this->var);
