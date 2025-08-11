@@ -133,7 +133,8 @@ BOOST_AUTO_TEST_CASE(array_test)
 	BOOST_CHECK_EQUAL(new_arr[1].get<int>(), 10);
 
 	// Test nested arrays
-	arr[4][0] = "nested";
+	arr.push_back(mctx::make_array());
+	arr[4].push_back("nested");
 	BOOST_CHECK(arr[4].is_array());
 	BOOST_CHECK_EQUAL(arr[4][0].get<std::string>(), "nested");
 

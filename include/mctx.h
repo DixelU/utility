@@ -486,6 +486,9 @@ public:
 
 	void clear();
 
+	static mctx make_array();
+	static mctx make_object();
+
 private:
 	value var;
 };
@@ -852,7 +855,13 @@ inline const mctx& mctx::at(size_t index) const { return this->as<array>().at(in
 inline mctx& mctx::at(const std::string& key) { return this->as<object>().at(key); }
 inline mctx& mctx::at(size_t index) { return this->as<array>().at(index); }
 
-inline void mctx::push_back(mctx value) { this->as<array>().push_back(std::move(value)); }
+inline void mctx::push_back(mctx value)
+{
+	if (this->is_none())
+		this->var = array{};
+
+	this->as<array>().push_back(std::move(value));
+}
 
 inline size_t mctx::size() const
 {
@@ -869,6 +878,9 @@ inline size_t mctx::size() const
 }
 
 inline void mctx::clear() { this->var = std::monostate{}; }
+
+inline mctx mctx::make_array() { mctx m; m.var = array{}; return m; }
+inline mctx mctx::make_object() { mctx m; m.var = object{}; return m; }
 
 inline mctx::value_iter::value_iter() = default;
 inline mctx::value_iter::value_iter(const value_iter&) = default;
