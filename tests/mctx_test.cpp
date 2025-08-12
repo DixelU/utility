@@ -7,6 +7,9 @@
 #include <vector>
 
 #include "mctx.h"
+#include "mctx_json.h"
+
+using dixelu::mctx;
 
 // Helper function to check if an exception is thrown
 template<class T_Function>
@@ -172,6 +175,21 @@ BOOST_AUTO_TEST_CASE(comparison_test)
 
 	BOOST_CHECK(s1.as<std::string>() == s2.as<std::string>());
 	BOOST_CHECK(s1.as<std::string>() != s3.as<std::string>());
+
+	mctx sz;
+	sz["r"].push_back(std::move(s1));
+	sz["r"].push_back(std::move(s2));
+	sz["r"].push_back(std::move(s3));
+	sz["e"]["1"] = 1;
+	sz["e"]["2"] = 2;
+	sz["e"]["3"] = 3.3;
+	// sz["e"]["4"] = std::any{4};
+
+	auto str = dixelu::mctx_json::serialize(sz);
+	std::cout << str << std::endl;
+
+	auto szr = dixelu::mctx_json::deserialize(str);
+	BOOST_CHECK(szr == sz);
 }
 
 BOOST_AUTO_TEST_CASE(custom_head_test)

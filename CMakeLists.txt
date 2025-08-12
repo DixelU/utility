@@ -16,4 +16,6 @@ add_executable(test_x
 
 add_executable(mctx_test
         tests/mctx_test.cpp
-        src/mctx.cpp)
+        src/mctx.cpp
+        include/mctx_json.h
+        src/mctx_json.cpp)

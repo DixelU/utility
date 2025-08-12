@@ -1,5 +1,8 @@
 #include <mctx.h>
 
+namespace dixelu
+{
+
 namespace details
 {
 
@@ -20,7 +23,6 @@ mctx::mctx(float v) : var(v) {}
 mctx::mctx(const char* v) : var(string(v)) {}
 
 mctx::mctx(std::string v) : var(std::move(v)) {}
-mctx::mctx(std::string&& v) : var(std::move(v)) {}
 
 mctx::mctx(const mctx& v) = default;
 mctx::mctx(mctx&& v) noexcept = default;
@@ -29,6 +31,12 @@ mctx& mctx::operator=(const mctx& v) = default;
 mctx& mctx::operator=(mctx&& v) noexcept = default;
 
 mctx::mctx(custom v) : var(std::move(v)) {}
+
+template<>
+bool mctx::is<mctx::custom>() const
+{
+	return std::holds_alternative<custom>(var);
+}
 
 bool mctx::empty() const
 {
@@ -217,6 +225,8 @@ void mctx::clear() { this->var = std::monostate{}; }
 mctx mctx::make_array() { mctx m; m.var = array{}; return m; }
 mctx mctx::make_object() { mctx m; m.var = object{}; return m; }
 
+bool mctx::operator==(const mctx& v) const { return v.var == this->var; }
+
 mctx::value_iter::value_iter() = default;
 mctx::value_iter::value_iter(const value_iter&) = default;
 mctx::value_iter::value_iter(value_iter&&) noexcept = default;
@@ -363,3 +373,4 @@ mctx::object::value_type* mctx::key_value_iter::access() const
 	return contained;
 }
 
+}

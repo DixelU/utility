@@ -12,6 +12,9 @@
 #include <vector>
 #include <utility>
 
+namespace dixelu
+{
+
 namespace details
 {
 
@@ -403,7 +406,17 @@ class mctx
 			object
 		>;
 
-	mctx(custom v);
+	explicit mctx(custom v);
+
+	template<typename T>
+	static constexpr bool integral_constructor_req =
+		std::is_integral_v<std::remove_cvref_t<T>> && (!std::is_same_v<bool, std::remove_cvref_t<T>>);
+
+	template<typename T>
+	static constexpr bool custom_type_reqs =
+		!std::is_fundamental_v<std::remove_cvref_t<T>> &&
+		!std::is_same_v<mctx, std::remove_cvref_t<T>> &&
+		!details::is_in_variant_v<std::remove_cvref_t<T>, value>;
 
 public:
 
@@ -413,7 +426,7 @@ public:
 	mctx();
 
 	template<typename T>
-	mctx(T&& v) requires std::is_integral_v<std::remove_cvref_t<T>> && (!std::is_same_v<bool, std::remove_cvref_t<T>>);
+	mctx(T&& v) requires integral_constructor_req<T>;
 
 	mctx(bool v);
 	mctx(double v);
@@ -422,7 +435,6 @@ public:
 	mctx(const char* v);
 
 	mctx(std::string v);
-	mctx(std::string&& v);
 
 	mctx(const mctx& v);
 	mctx(mctx&& v) noexcept;
@@ -431,7 +443,7 @@ public:
 	mctx& operator=(mctx&&) noexcept;
 
 	template<typename T>
-	mctx(T v) requires (!std::is_fundamental_v<std::remove_cvref_t<T>>) && (!std::is_same_v<mctx, std::remove_cvref_t<T>>);
+	mctx(T v) requires custom_type_reqs<T>;
 
 	[[nodiscard]] bool empty() const;
 
@@ -493,6 +505,8 @@ public:
 
 	static mctx make_array();
 	static mctx make_object();
+
+	bool operator==(const mctx& v) const;
 
 private:
 	value var;
@@ -586,12 +600,15 @@ private:
 };
 
 template<typename T>
-mctx::mctx(T&& v) requires std::is_integral_v<std::remove_cvref_t<T>> && (!std::is_same_v<bool, std::remove_cvref_t<T>>) :
+mctx::mctx(T&& v) requires integral_constructor_req<T> :
 	var(static_cast<uint64_t>( static_cast<typename details::try_unsigned<std::remove_cvref_t<T>>::type>(v))) { }
 
 template <typename T>
-mctx::mctx(T v) requires (!std::is_fundamental_v<std::remove_cvref_t<T>>) && (!std::is_same_v<mctx, std::remove_cvref_t<T>>) :
+mctx::mctx(T v) requires custom_type_reqs<T> :
 	var(custom{v}) {}
+
+template<>
+bool mctx::is<mctx::custom>() const;
 
 template<typename T>
 bool mctx::is() const
@@ -693,4 +710,6 @@ mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T
 	}, this->val);
 
 	return *this = std::move(new_self);
+}
+
 }
