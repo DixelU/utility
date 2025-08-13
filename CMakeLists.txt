@@ -6,16 +6,20 @@ include_directories(include)
 set(CMAKE_CXX_STANDARD 23)
 
 if (UNIX)
-    add_compile_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
-    add_link_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
+	add_compile_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
+	add_link_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
 endif ()
 
 add_executable(test_x
-        tests/test_x.cpp
-        src/mctx.cpp)
+	tests/test_x.cpp
+	src/mctx.cpp)
 
 add_executable(mctx_test
-        tests/mctx_test.cpp
-        src/mctx.cpp
-        include/mctx_json.h
-        src/mctx_json.cpp)
+	tests/mctx_test.cpp
+	src/mctx.cpp
+	include/mctx_json.h
+	src/mctx_json.cpp)
+
+add_executable(mctx_custom_heads_debug
+	tests/mctx_custom_heads_debug.cpp
+	src/mctx.cpp)
