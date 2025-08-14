@@ -42,7 +42,7 @@ struct __try_unsigned<T, false>
 template<typename T>
 struct try_unsigned
 {
-	using type = typename
+	using type =
 		__try_unsigned<
 			T,
 			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
@@ -67,7 +67,7 @@ struct __try_signed<T, false>
 template<typename T>
 struct try_signed
 {
-	using type = typename
+	using type =
 		__try_signed<
 			T,
 			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
@@ -80,7 +80,7 @@ struct __opposite_sign_type {};
 template<typename T>
 struct __opposite_sign_type<T, true>
 {
-	using type = typename
+	using type =
 		__try_unsigned<
 			T,
 			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
@@ -90,7 +90,7 @@ struct __opposite_sign_type<T, true>
 template<typename T>
 struct __opposite_sign_type<T, false>
 {
-	using type = typename
+	using type =
 		__try_signed<
 			T,
 			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
@@ -100,8 +100,7 @@ struct __opposite_sign_type<T, false>
 template<typename T>
 struct opposite_sign_type
 {
-	using type = typename
-		__opposite_sign_type<T, std::is_signed_v<T>>::type;
+	using type = __opposite_sign_type<T, std::is_signed_v<T>>::type;
 };
 
 template<class... Ts>
@@ -220,75 +219,19 @@ public:
 		data = new (static_cast<std::remove_cvref_t<T>*>(this->data)) std::remove_cvref_t<T>(std::forward<T>(value));
 	}
 
-	custom_head() :
-		data(nullptr),
-		mf(mfunc<std::nullptr_t>)
-	{}
+	custom_head();
+	~custom_head();
 
-	custom_head(const custom_head& lhs) :
-		data(nullptr),
-		mf(lhs.mf)
-	{
-		lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
-		lhs.mf(lhs.data, this->data, EMPLACE_COPY);
-	}
+	custom_head(const custom_head& lhs);
+	custom_head(custom_head&& lhs) noexcept;
 
-	custom_head(custom_head&& lhs) noexcept :
-		data(lhs.data),
-		mf(lhs.mf)
-	{
-		lhs.data = nullptr;
-		lhs.mf = mfunc<std::nullptr_t>;
-	}
+	void reset(mf_sig new_mf_sig = mfunc<std::nullptr_t>);
+	void swap(custom_head& lhs) noexcept;
 
-	void reset(mf_sig new_mf_sig = mfunc<std::nullptr_t>)
-	{
-		if (this->data != nullptr)
-		{
-			this->mf(this->data, nullptr, DESTROY);
-			this->mf(this->data, nullptr, DEALLOCATE);
-			this->data = nullptr;
-		}
+	custom_head& operator=(const custom_head& lhs);
+	custom_head& operator=(custom_head&& lhs) noexcept;
 
-		this->mf = new_mf_sig;
-	}
-
-	custom_head& operator=(const custom_head& lhs)
-	{
-		if (&lhs == this)
-			return *this;
-
-		this->reset(lhs.mf);
-
-		lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
-		lhs.mf(lhs.data, this->data, EMPLACE_COPY);
-
-		return *this;
-	}
-
-	void swap(custom_head& lhs) noexcept
-	{
-		std::swap(lhs.data, this->data);
-		std::swap(lhs.mf, this->mf);
-	}
-
-	custom_head& operator=(custom_head&& lhs) noexcept
-	{
-		this->reset(lhs.mf);
-		this->swap(lhs);
-
-		return *this;
-	}
-
-	[[nodiscard]] bool empty() const
-	{
-		return data == nullptr;
-	}
-
-	~custom_head()
-	{
-		this->reset();
-	}
+	[[nodiscard]] bool empty() const;
 
 	template<typename T>
 	[[nodiscard]] bool is() const
@@ -339,21 +282,8 @@ public:
 		return res;
 	}
 
-	bool operator==(const custom_head& lhs) const
-	{
-		auto this_hash = this->mf(nullptr, nullptr, NONE);
-		auto lhs_hash = lhs.mf(nullptr, nullptr, NONE);
-
-		if (this_hash != lhs_hash)
-			return false;
-
-		return this->mf(this->data, lhs.data, COMPARE) != 0;
-	}
-
-	bool operator!=(const custom_head& lhs) const
-	{
-		return !(*this == lhs);
-	}
+	bool operator==(const custom_head& lhs) const;
+	bool operator!=(const custom_head& lhs) const;
 };
 
 template<typename T>
@@ -457,10 +387,10 @@ public:
 	[[nodiscard]] T get(T default_value) const;
 
 	template<typename T>
-	[[nodiscard]] const typename details::as_res<T>::type& as() const;
+	[[nodiscard]] const details::as_res<T>::type& as() const;
 
 	template<typename T>
-	[[nodiscard]] typename details::as_res<T>::type& as();
+	[[nodiscard]] details::as_res<T>::type& as();
 
 	[[nodiscard]] bool is_none() const;
 
@@ -552,7 +482,7 @@ public:
 	bool operator!=(const value_iter& lhs) const;
 
 	template<typename T>
-	value_iter& __erase(T& target) requires std::is_same_v<T, mctx::array> || std::is_same_v<T, mctx::object>;
+	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
 
 private:
 	[[nodiscard]] mctx* access() const;
@@ -601,7 +531,7 @@ private:
 
 template<typename T>
 mctx::mctx(T&& v) requires integral_constructor_req<T> :
-	var(static_cast<uint64_t>( static_cast<typename details::try_unsigned<std::remove_cvref_t<T>>::type>(v))) { }
+	var(static_cast<uint64_t>( static_cast<details::try_unsigned<std::remove_cvref_t<T>>::type>(v))) { }
 
 template <typename T>
 mctx::mctx(T v) requires custom_type_reqs<T> :
@@ -656,7 +586,7 @@ T mctx::get(T default_value) const
 }
 
 template<typename T>
-const typename details::as_res<T>::type& mctx::as() const
+const details::as_res<T>::type& mctx::as() const
 {
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).as<T>();
@@ -678,7 +608,7 @@ const typename details::as_res<T>::type& mctx::as() const
 }
 
 template<typename T>
-typename details::as_res<T>::type& mctx::as()
+ details::as_res<T>::type& mctx::as()
 {
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).as<T>();
@@ -699,7 +629,7 @@ typename details::as_res<T>::type& mctx::as()
 }
 
 template<typename T>
-mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, mctx::array> || std::is_same_v<T, mctx::object>
+mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>
 {
 	value_iter new_self;
 

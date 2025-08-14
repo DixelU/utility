@@ -12,6 +12,93 @@ size_t mfunc<std::nullptr_t>(void*, void*, adj_mf_ops)
 	return typeid(std::nullptr_t).hash_code();
 }
 
+custom_head::custom_head():
+	data(nullptr),
+	mf(mfunc<std::nullptr_t>)
+{}
+
+custom_head::~custom_head()
+{
+	this->reset();
+}
+
+custom_head::custom_head(const custom_head& lhs):
+	data(nullptr),
+	mf(lhs.mf)
+{
+	lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
+	lhs.mf(lhs.data, this->data, EMPLACE_COPY);
+}
+
+custom_head::custom_head(custom_head&& lhs) noexcept:
+	data(lhs.data),
+	mf(lhs.mf)
+{
+	lhs.data = nullptr;
+	lhs.mf = mfunc<std::nullptr_t>;
+}
+
+void custom_head::reset(mf_sig new_mf_sig)
+{
+	if (this->data != nullptr)
+	{
+		this->mf(this->data, nullptr, DESTROY);
+		this->mf(this->data, nullptr, DEALLOCATE);
+		this->data = nullptr;
+	}
+
+	this->mf = new_mf_sig;
+}
+
+custom_head& custom_head::operator=(const custom_head& lhs)
+{
+	if (&lhs == this)
+		return *this;
+
+	this->reset(lhs.mf);
+
+	lhs.mf(reinterpret_cast<void*>(&this->data), nullptr, ALLOCATE);
+	lhs.mf(lhs.data, this->data, EMPLACE_COPY);
+
+	return *this;
+}
+
+void custom_head::swap(custom_head& lhs) noexcept
+{
+	std::swap(lhs.data, this->data);
+	std::swap(lhs.mf, this->mf);
+}
+
+custom_head& custom_head::operator=(custom_head&& lhs) noexcept
+{
+	this->reset(lhs.mf);
+	this->swap(lhs);
+
+	return *this;
+}
+
+bool custom_head::empty() const
+{
+	return data == nullptr;
+}
+
+
+bool custom_head::operator==(const custom_head& lhs) const
+{
+	auto this_hash = this->mf(nullptr, nullptr, NONE);
+	auto lhs_hash = lhs.mf(nullptr, nullptr, NONE);
+
+	if (this_hash != lhs_hash)
+		return false;
+
+	return this->mf(this->data, lhs.data, COMPARE) != 0;
+}
+
+bool custom_head::operator!=(const custom_head& lhs) const
+{
+	return !(*this == lhs);
+}
+
 }
 
 mctx::mctx() = default;
