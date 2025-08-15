@@ -392,7 +392,12 @@ public:
 	template<typename T>
 	[[nodiscard]] details::as_res<T>::type& as();
 
+	template<typename T>
+	[[nodiscard]] T get_as(T default_value = T()) const;
+
 	[[nodiscard]] bool is_none() const;
+
+	[[nodiscard]] bool is_scalar() const;
 
 	[[nodiscard]] bool is_array() const;
 
@@ -627,6 +632,49 @@ template<typename T>
 			return *ptr;
 	}
 }
+
+template<typename T>
+inline T mctx::get_as(T default_value) const
+{
+	T value{ std::move(default_value) };
+
+	std::visit(details::overloaded{
+		[&](float v) { value = static_cast<T>(v); },
+		[&](double v) { value = static_cast<T>(v); },
+		[&](uint64_t v) { value = static_cast<T>(v); },
+		[&](bool v) { value = static_cast<T>(v ? 1 : 0); },
+		[&](const custom& c) { value = c.get<T>(default_value); },
+		[&](const string& v)
+		{
+			if constexpr (std::is_floating_point_v<T>)
+			{
+				char* p = nullptr;
+				double d = strtod(v.c_str(), &p);
+				if (p != nullptr)
+					return;
+
+				value = static_cast<T>(std::stod(v));
+			}
+			else if constexpr (std::is_integral_v<T>)
+			{
+				char* p = nullptr;
+				long long ll = strtoll(v.c_str(), &p, 10);
+				if (p != nullptr)
+					return;
+
+				value = static_cast<T>(ll);
+			}
+			else if constexpr (std::is_same_v<T, std::string>)
+				value = v;
+		},
+		[](const auto&) { /* Do nothing for empty or unsupported types */ }
+	}, this->var);
+
+	return value;
+}
+
+template<>
+std::string mctx::get_as<std::string>(std::string default_value) const;
 
 template<typename T>
 mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>

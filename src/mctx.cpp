@@ -1,4 +1,6 @@
-#include <mctx.h>
+#include "mctx.h"
+
+#include <format>
 
 namespace dixelu
 {
@@ -137,6 +139,11 @@ bool mctx::empty() const
 bool mctx::is_none() const
 {
 	return this->var.index() == 0;
+}
+
+bool mctx::is_scalar() const
+{
+	return !this->is_none() && !this->is_object() && !this->is_array();
 }
 
 bool mctx::is_array() const
@@ -285,12 +292,12 @@ const mctx& mctx::at(size_t index) const { return this->as<array>().at(index); }
 mctx& mctx::at(const std::string& key) { return this->as<object>().at(key); }
 mctx& mctx::at(size_t index) { return this->as<array>().at(index); }
 
-void mctx::push_back(mctx value)
+void mctx::push_back(mctx val_t)
 {
 	if (this->is_none())
 		this->var = array{};
 
-	this->as<array>().push_back(std::move(value));
+	this->as<array>().push_back(std::move(val_t));
 }
 
 size_t mctx::size() const
@@ -431,6 +438,30 @@ bool mctx::key_value_iter::operator==(const key_value_iter& lhs) const
 }
 
 bool mctx::key_value_iter::operator!=(const key_value_iter& lhs) const { return !(*this == lhs); }
+
+template<>
+std::string mctx::get_as<std::string>(std::string result) const
+{
+	std::visit(details::overloaded{
+		[&](const std::monostate&) { /* default_value */ },
+		[&](bool v) { result = v ? "true" : "false"; },
+		[&](uint64_t v) { result = std::to_string(v); },
+		[&](float v) { result = std::format("{}", v); },
+		[&](double v) { result = std::format("{}", v); },
+		[&](const std::string& v) { result = v; },
+		[&](const custom& c)
+		{
+			if (c.is<std::string>())
+				result = c.get<std::string>();
+			else
+				result = c.get_type_name();
+		},
+		[&](const array& a) { result = "[array]"; },
+		[&](const object& o) { result = "{object}"; }
+	}, this->var);
+
+	return result;
+}
 
 mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
 {
