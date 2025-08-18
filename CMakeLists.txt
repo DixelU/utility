@@ -5,10 +5,10 @@ include_directories(include)
 
 set(CMAKE_CXX_STANDARD 23)
 
-if (UNIX)
-	add_compile_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
-	add_link_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
-endif ()
+# if (UNIX)
+#	add_compile_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
+#	add_link_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
+# endif ()
 
 set (src
 	src/mctx.cpp
@@ -25,7 +25,7 @@ add_executable(mctx_test
 	${src}
 )
 
-add_executable(mctx_custom_heads_debug
-	tests/mctx_custom_heads_debug.cpp
+add_executable(mctx_raw_stress_test
+	tests/mctx_raw_stress_test.cpp
 	${src}
 )

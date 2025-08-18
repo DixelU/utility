@@ -396,30 +396,32 @@ public:
 	[[nodiscard]] T get_as(T default_value = T()) const;
 
 	[[nodiscard]] bool is_none() const;
-
 	[[nodiscard]] bool is_scalar() const;
-
 	[[nodiscard]] bool is_array() const;
-
 	[[nodiscard]] bool is_object() const;
 
+	[[nodiscard]] value_iter find(const std::string& str);
+	[[nodiscard]] value_iter find(const std::string& str) const;
+	[[nodiscard]] value_iter begin();
+	[[nodiscard]] value_iter end();
 	[[nodiscard]] value_iter begin() const;
-
 	[[nodiscard]] value_iter end() const;
 
-	[[nodiscard]] value_iter rbegin() const;
+	[[nodiscard]] value_iter cbegin() const;
+	[[nodiscard]] value_iter cend() const;
 
+	[[nodiscard]] value_iter rbegin() const;
 	[[nodiscard]] value_iter rend() const;
 
-	[[nodiscard]] value_iter find(const std::string& str) const;
-
 	[[nodiscard]] key_value_iter kvfind(const std::string& str);
-
+	[[nodiscard]] key_value_iter kvfind(const std::string& str) const;
 	[[nodiscard]] key_value_iter kvbegin() const;
-
 	[[nodiscard]] key_value_iter kvend() const;
+	[[nodiscard]] key_value_iter kvbegin();
+	[[nodiscard]] key_value_iter kvend();
 
 	value_iter erase(value_iter iter);
+	key_value_iter erase(key_value_iter iter);
 
 	// Container operations
 	mctx& operator[](const std::string& key);
@@ -613,7 +615,7 @@ const details::as_res<T>::type& mctx::as() const
 }
 
 template<typename T>
- details::as_res<T>::type& mctx::as()
+details::as_res<T>::type& mctx::as()
 {
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).as<T>();
@@ -634,7 +636,7 @@ template<typename T>
 }
 
 template<typename T>
-inline T mctx::get_as(T default_value) const
+T mctx::get_as(T default_value) const
 {
 	T value{ std::move(default_value) };
 

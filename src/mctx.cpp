@@ -156,7 +156,43 @@ bool mctx::is_object() const
 	return std::holds_alternative<object>(this->var);
 }
 
+mctx::value_iter mctx::begin()
+{
+	value_iter it;
+
+	std::visit(details::overloaded{
+		[&it](array& a) { it = value_iter{a.begin()}; },
+		[&it](object& o) { it = value_iter{o.begin()}; },
+		[](const auto &) -> void { }
+	}, this->var);
+
+	return it;
+}
+
+mctx::value_iter mctx::end()
+{
+	value_iter it;
+
+	std::visit(details::overloaded{
+		[&it](array& a) { it = value_iter{a.end()}; },
+		[&it](object& o) { it = value_iter{o.end()}; },
+		[](const auto&) -> void {}
+	}, this->var);
+
+	return it;
+}
+
 mctx::value_iter mctx::begin() const
+{
+	return this->cbegin();
+}
+
+mctx::value_iter mctx::end() const
+{
+	return this->cend();
+}
+
+mctx::value_iter mctx::cbegin() const
 {
 	value_iter it;
 
@@ -169,7 +205,7 @@ mctx::value_iter mctx::begin() const
 	return it;
 }
 
-mctx::value_iter mctx::end() const
+mctx::value_iter mctx::cend() const
 {
 	value_iter it;
 
@@ -208,6 +244,19 @@ mctx::value_iter mctx::rend() const
 	return it;
 }
 
+mctx::value_iter mctx::find(const std::string &str)
+{
+	value_iter it;
+
+	std::visit(details::overloaded{
+		[](array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](object& o) { it = value_iter{o.find(str)}; },
+		[](const auto&) -> void {}
+	}, this->var);
+
+	return it;
+}
+
 mctx::value_iter mctx::find(const std::string& str) const
 {
 	value_iter it;
@@ -222,6 +271,19 @@ mctx::value_iter mctx::find(const std::string& str) const
 }
 
 mctx::key_value_iter mctx::kvfind(const std::string& str)
+{
+	key_value_iter it;
+
+	std::visit(details::overloaded{
+		[](const array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](object& o) { it = key_value_iter{o.find(str)}; },
+		[](const auto&) -> void {}
+	}, this->var);
+
+	return it;
+}
+
+mctx::key_value_iter mctx::kvfind(const std::string &str) const
 {
 	key_value_iter it;
 
@@ -260,6 +322,32 @@ mctx::key_value_iter mctx::kvend() const
 	return it;
 }
 
+mctx::key_value_iter mctx::kvbegin()
+{
+	key_value_iter it;
+
+	std::visit(details::overloaded{
+		[](array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](object& o) { it = key_value_iter{o.begin()}; },
+		[](const auto&) -> void {}
+	}, this->var);
+
+	return it;
+}
+
+mctx::key_value_iter mctx::kvend()
+{
+	key_value_iter it;
+
+	std::visit(details::overloaded{
+		[](array&) { throw std::runtime_error("find is not defined for array"); },
+		[&](object& o) { it = key_value_iter{o.end()}; },
+		[](const auto&) -> void {}
+	}, this->var);
+
+	return it;
+}
+
 mctx::value_iter mctx::erase(value_iter iter)
 {
 	value_iter after;
@@ -269,11 +357,23 @@ mctx::value_iter mctx::erase(value_iter iter)
 
 	std::visit(details::overloaded{
 		 array_erase, object_erase,
-	[](const auto&) -> void {} }, this->var);
+		[](const auto&) -> void {} }, this->var);
 
 	return after;
 }
 
+mctx::key_value_iter mctx::erase(key_value_iter iter)
+{
+	key_value_iter after;
+
+	auto object_erase = [&](object& o) { after = iter.__erase(o); };
+
+	std::visit(details::overloaded{
+		object_erase,
+		[](const auto&) -> void {}}, this->var);
+
+	return after;
+}
 
 mctx& mctx::operator[](const std::string& key)
 {
