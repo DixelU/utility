@@ -354,6 +354,7 @@ public:
 	class key_value_iter;
 
 	mctx();
+	virtual ~mctx() = default;
 
 	template<typename T>
 	mctx(T&& v) requires integral_constructor_req<T>;
@@ -394,6 +395,12 @@ public:
 
 	template<typename T>
 	[[nodiscard]] T get_as(T default_value = T()) const;
+
+	template<typename T>
+	[[nodiscard]] T get(const std::string& key, T default_value = T()) const;
+
+	template<typename T>
+	[[nodiscard]] T get_as(const std::string& key, T default_value = T()) const;
 
 	[[nodiscard]] bool is_none() const;
 	[[nodiscard]] bool is_scalar() const;
@@ -673,6 +680,26 @@ T mctx::get_as(T default_value) const
 	}, this->var);
 
 	return value;
+}
+
+template <typename T>
+T mctx::get(const std::string& key, T default_value) const
+{
+	auto iter = this->find(key);
+	if (iter == this->end())
+		return default_value;
+
+	return this->get<T>(default_value);
+}
+
+template <typename T>
+T mctx::get_as(const std::string& key, T default_value) const
+{
+	auto iter = this->find(key);
+	if (iter == this->end())
+		return default_value;
+
+	return this->get_as<T>(default_value);
 }
 
 template<>
