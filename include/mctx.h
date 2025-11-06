@@ -446,6 +446,9 @@ public:
 	[[nodiscard]] size_t size() const;
 
 	void clear();
+	void erase(const std::string& str);
+	value_iter erase(const value_iter& begin, const value_iter& end);
+	key_value_iter erase(const key_value_iter& begin, const key_value_iter& end);
 
 	static mctx make_array();
 	static mctx make_object();
@@ -498,6 +501,9 @@ public:
 	template<typename T>
 	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
 
+	template<typename T>
+	value_iter& __erase(T& target, const value_iter& end) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+
 private:
 	[[nodiscard]] mctx* access() const;
 };
@@ -538,6 +544,7 @@ public:
 	bool operator!=(const key_value_iter& lhs) const;
 
 	key_value_iter& __erase(object& target);
+	key_value_iter& __erase(object& target, const key_value_iter& end);
 
 private:
 	[[nodiscard]] object::value_type* access() const;
@@ -718,5 +725,21 @@ mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T
 
 	return *this = std::move(new_self);
 }
+
+template <typename T>
+mctx::value_iter& mctx::value_iter::__erase(T& target, const value_iter& end)
+	requires std::is_same_v<T, std::vector<mctx>> || std::is_same_v<T, std::map<std::string, mctx>>
+{
+	value_iter new_self;
+
+	std::visit(details::overloaded{
+		[&](typename T::iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
+		[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
+		[](const auto&) { throw std::runtime_error("Bad erase call"); }
+	}, this->val);
+
+	return *this = std::move(new_self);
+}
+
 
 }

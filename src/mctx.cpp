@@ -416,6 +416,40 @@ size_t mctx::size() const
 
 void mctx::clear() { this->var = std::monostate{}; }
 
+void mctx::erase(const std::string& str)
+{
+	auto iter = this->find(str);
+	if (iter == this->end())
+		return;
+
+	this->erase(iter);
+}
+
+mctx::value_iter mctx::erase(const value_iter& begin, const value_iter& end)
+{
+	auto after = begin;
+
+	auto array_erase = [&](array& a) { after.__erase(a, end); };
+	auto object_erase = [&](object& o) { after.__erase(o, end); };
+
+	std::visit(details::overloaded{
+		 array_erase, object_erase,
+		[](const auto&) -> void {} }, this->var);
+
+	return after;
+}
+
+mctx::key_value_iter mctx::erase(const key_value_iter& begin, const key_value_iter& end)
+{
+	auto after = begin;
+
+	auto object_erase = [&](object& o) { after.__erase(o, end); };
+
+	std::visit(details::overloaded{object_erase, [](const auto&) -> void {} }, this->var);
+
+	return after;
+}
+
 mctx mctx::make_array() { mctx m; m.var = array{}; return m; }
 mctx mctx::make_object() { mctx m; m.var = object{}; return m; }
 
@@ -570,6 +604,19 @@ mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
 	std::visit(details::overloaded{
 		[&](object::iterator it) { new_self = key_value_iter{target.erase(it)}; },
 		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it)}; },
+		[](const auto&) { throw std::runtime_error("Bad erase call"); }
+	}, this->val);
+
+	return *this = std::move(new_self);
+}
+
+mctx::key_value_iter& mctx::key_value_iter::__erase(object& target, const key_value_iter& end)
+{
+	key_value_iter new_self;
+
+	std::visit(details::overloaded{
+		[&](object::iterator it) { new_self = key_value_iter{target.erase(it, std::get<object::iterator>(end.val))}; },
+		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it, std::get<object::const_iterator>(end.val))}; },
 		[](const auto&) { throw std::runtime_error("Bad erase call"); }
 	}, this->val);
 
