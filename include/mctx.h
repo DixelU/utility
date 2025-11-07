@@ -374,6 +374,12 @@ public:
 	mctx& operator=(mctx&&) noexcept;
 
 	template<typename T>
+	mctx& operator=(std::initializer_list<T>);
+
+	template<typename T>
+	mctx(std::vector<T>);
+
+	template<typename T>
 	mctx(T v) requires custom_type_reqs<T>;
 
 	[[nodiscard]] bool empty() const;
@@ -555,8 +561,19 @@ mctx::mctx(T&& v) requires integral_constructor_req<T> :
 	var(static_cast<uint64_t>( static_cast<details::try_unsigned<std::remove_cvref_t<T>>::type>(v))) { }
 
 template <typename T>
+mctx::mctx(std::vector<T> values) :
+	var(array{std::move(values)}) {}
+
+template <typename T>
 mctx::mctx(T v) requires custom_type_reqs<T> :
 	var(custom{v}) {}
+
+template <typename T>
+mctx& mctx::operator=(std::initializer_list<T> list)
+{
+	var = array{std::move(list)};
+	return *this;
+}
 
 template<>
 bool mctx::is<mctx::custom>() const;
