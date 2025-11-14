@@ -571,7 +571,13 @@ mctx::mctx(T v) requires custom_type_reqs<T> :
 template <typename T>
 mctx& mctx::operator=(std::initializer_list<T> list)
 {
-	var = array{std::move(list)};
+	array values;
+	values.reserve(list.size());
+
+	for (auto & value : list)
+		values.emplace_back(std::move(value));
+
+	var = std::move(values);
 	return *this;
 }
 
