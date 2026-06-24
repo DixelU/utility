@@ -414,6 +414,12 @@ size_t mctx::size() const
 	return size;
 }
 
+bool mctx::contains(const std::string& str) const
+{
+	auto iter = this->find(str);
+	return iter != this->end();
+}
+
 void mctx::clear() { this->var = std::monostate{}; }
 
 void mctx::erase(const std::string& str)

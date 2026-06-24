@@ -450,6 +450,7 @@ public:
 	void push_back(mctx value);
 
 	[[nodiscard]] size_t size() const;
+	[[nodiscard]] bool contains(const std::string& str) const;
 
 	void clear();
 	void erase(const std::string& str);
@@ -505,10 +506,11 @@ public:
 	bool operator!=(const value_iter& lhs) const;
 
 	template<typename T>
-	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+	value_iter& __erase(T& target)
+		requires std::is_same_v<T, array> || std::is_same_v<T, object>;
 
 	template<typename T>
-	value_iter& __erase(T& target, const value_iter& end) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+	value_iter& __erase(T& target, const value_iter& end);
 
 private:
 	[[nodiscard]] mctx* access() const;
@@ -719,7 +721,7 @@ T mctx::get(const std::string& key, T default_value) const
 	if (iter == this->end())
 		return default_value;
 
-	return this->get<T>(default_value);
+	return iter->get<T>(default_value);
 }
 
 template <typename T>
@@ -729,14 +731,15 @@ T mctx::get_as(const std::string& key, T default_value) const
 	if (iter == this->end())
 		return default_value;
 
-	return this->get_as<T>(default_value);
+	return iter->get_as<T>(default_value);
 }
 
 template<>
 std::string mctx::get_as<std::string>(std::string default_value) const;
 
-template<typename T>
-mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>
+template <typename T>
+mctx::value_iter& mctx::value_iter::__erase(T& target)
+	requires std::is_same_v<T, array> || std::is_same_v<T, object>
 {
 	value_iter new_self;
 
@@ -749,20 +752,36 @@ mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T
 	return *this = std::move(new_self);
 }
 
-template <typename T>
+template<typename T>
 mctx::value_iter& mctx::value_iter::__erase(T& target, const value_iter& end)
-	requires std::is_same_v<T, std::vector<mctx>> || std::is_same_v<T, std::map<std::string, mctx>>
 {
-	value_iter new_self;
+	if constexpr (std::is_same_v<T, array> || std::is_same_v<T, object>)
+	{
+		value_iter new_self;
 
-	std::visit(details::overloaded{
-		[&](typename T::iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
-		[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
-		[](const auto&) { throw std::runtime_error("Bad erase call"); }
-	}, this->val);
+		std::visit(details::overloaded{
+			[&](typename T::iterator it) { new_self = value_iter{target.erase(it)}; },
+			[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
+			[](const auto&) { throw std::runtime_error("Bad erase call"); }
+		}, this->val);
 
-	return *this = std::move(new_self);
+		return *this = std::move(new_self);
+	}
+
+	if constexpr (std::is_same_v<T, std::vector<mctx>> || std::is_same_v<T, std::map<std::string, mctx>>)
+	{
+		value_iter new_self;
+
+		std::visit(details::overloaded{
+			[&](typename T::iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
+			[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it, std::get<typename T::iterator>(end.val))}; },
+			[](const auto&) { throw std::runtime_error("Bad erase call"); }
+		}, this->val);
+
+		return *this = std::move(new_self);
+	}
+
+	throw std::runtime_error("Bad erase call");
 }
-
 
 }
