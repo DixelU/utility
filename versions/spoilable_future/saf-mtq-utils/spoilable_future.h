@@ -1,18 +1,18 @@
-#ifndef DIXELU_SPOILABLE_FUTURE_H
-#define DIXELU_SPOILABLE_FUTURE_H
+//
+// Created by stranger on 19.01.24.
+//
 
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-#include <cstddef>
-#include <memory>
-#include <mutex>
+#ifndef SAFMTQ_SPOILABLE_FUTURE_H
+#define SAFMTQ_SPOILABLE_FUTURE_H
+
 #include <stdexcept>
-#include <string>
-#include <type_traits>
-#include <utility>
+#include <iostream>
+#include <atomic>
+#include <memory>
+#include <condition_variable>
+#include <mutex>
 
-namespace dixelu
+namespace tdv
 {
 
 namespace spoilable_future
@@ -51,6 +51,24 @@ struct future_state
 template<bool value>
 struct enable_default_copyable
 {
+//	enable_default_copyable() noexcept
+//	{ std::cout << "C\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+//	enable_default_copyable(const enable_default_copyable&) noexcept = default;
+//	enable_default_copyable& operator=(const enable_default_copyable&) noexcept = default;
+//	enable_default_copyable(enable_default_copyable&&) noexcept = default;
+//	enable_default_copyable& operator=(enable_default_copyable&&) noexcept = default;
+//	~enable_default_copyable() = default;
+//	enable_default_copyable(const enable_default_copyable&) noexcept
+//		{ std::cout << "CC\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+//	enable_default_copyable& operator=(const enable_default_copyable&) noexcept
+//		{ std::cout << "CA\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+//	enable_default_copyable(enable_default_copyable&&) noexcept
+//		{ std::cout << "MA\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+//	enable_default_copyable& operator=(enable_default_copyable&&) noexcept
+//		{ std::cout << "MA\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+//	~enable_default_copyable()
+//		{ std::cout << "D\t" + std::to_string((size_t)this) + "\n" << std::flush; }
+
 	template<typename T>
 	static void implement_copy_trait(
 		typename std::remove_cv<T>::type& target,
@@ -60,6 +78,13 @@ struct enable_default_copyable
 template<>
 struct enable_default_copyable<false>
 {
+//	enable_default_copyable() noexcept = default;
+//	enable_default_copyable(const enable_default_copyable&) noexcept = delete;
+//	enable_default_copyable& operator=(const enable_default_copyable&) noexcept = delete;
+//	enable_default_copyable(enable_default_copyable&&) noexcept = default;
+//	enable_default_copyable& operator=(enable_default_copyable&&) noexcept = default;
+//	~enable_default_copyable() = default;
+
 	template<typename T>
 	static void implement_copy_trait(
 		typename std::remove_cv<T>::type& target,
@@ -119,7 +144,7 @@ public:
 	future(future&& rhs) noexcept:
 		_state(std::move(rhs._state)) {}
 
-	future& operator=(future&& rhs) noexcept
+	future& operator=(future&& rhs)
 	{
 		_state = std::move(rhs._state);
 		return *this;
@@ -138,7 +163,7 @@ public:
 		return *this;
 	}
 
-	typename std::conditional<_shared, const cv_removed_T_t&, cv_removed_T_t>::type
+	inline typename std::conditional<_shared, const cv_removed_T_t&, cv_removed_T_t>::type
 		get()
 	{
 		if(!_state)
@@ -148,8 +173,7 @@ public:
 
 		if(_waitless && _state->_status != state::status::ready)
 			throw std::runtime_error("Waitless future is not yet ready");
-
-		if(!_waitless)
+		else if(!_waitless)
 		{
 			_state->_cond.wait(locker, [this]() -> bool {
 				auto current_status = _state->_status.load();
@@ -169,7 +193,7 @@ public:
 
 	bool valid() const
 	{
-		return static_cast<bool>(_state.get());
+		return (bool)_state.get();
 	}
 
 	template<bool waitless = _waitless>
@@ -190,7 +214,7 @@ public:
 	}
 
 	template< class Rep, class Period, bool waitless = _waitless>
-	typename std::enable_if<(!waitless), typename state::status>::type
+	inline typename std::enable_if<(!waitless), typename state::status>::type
 		wait_for(const std::chrono::duration<Rep, Period>& rel_time) const
 	{
 		if(!_state)
@@ -206,7 +230,7 @@ public:
 		return _state->_status.load();
 	}
 
-	state_status get_state() const
+	inline state_status get_state() const
 	{
 		if(!_state)
 			throw std::runtime_error("No future state");
@@ -226,7 +250,7 @@ private:
 
 	std::shared_ptr<state> _state{nullptr};
 
-	std::shared_ptr<state> getStateWithConstruction()
+	inline std::shared_ptr<state> getStateWithConstruction()
 	{
 		if(!_state)
 		{
@@ -236,15 +260,15 @@ private:
 		return _state;
 	}
 
-	void unbindCurrentState() noexcept
+	inline void unbindCurrentState() noexcept
 	{
 		if(!_state)
 			return;
 
 		std::unique_lock<std::mutex> locker(_state->_locker);
 
-		size_t new_count = --_state->_promisesCount;
-		if(new_count == 0 && _state->_status == state::status::yet_empty)
+		_state->_promisesCount--;
+		if(_state->_promisesCount == 0 && _state->_status == state::status::yet_empty)
 			_state->_status = state::status::spoiled;
 		if(!_waitless)
 			_state->_cond.notify_all();
@@ -264,7 +288,7 @@ public:
 		_state(lhs._state)
 	{
 		if(_state)
-			++_state->_promisesCount;
+			_state->_promisesCount++;
 	}
 
 	~promise()
@@ -323,15 +347,13 @@ public:
 
 		if(currentState->_data && !_reusable)
 			throw std::runtime_error("set_value to already set non-reusable promise");
-		
 		currentState->_data.reset(new T(std::move(value)));
 		currentState->_status = state::status::ready;
-
 		if(!_waitless)
 			currentState->_cond.notify_all();
 	}
 
-	void set_value(const T& value) { set_value((typename std::remove_cv<T>::type)value); }
+	inline void set_value(const T& value) { set_value((typename std::remove_cv<T>::type)value); }
 };
 
 } // spoilable future
@@ -357,6 +379,10 @@ using shared_promise = spoilable_future::promise<T, true, false, false>;
 template<typename T>
 using shared_future = spoilable_future::future<T, true, false, false>;
 template<typename T>
+using shared_promise = spoilable_future::promise<T, true, false, false>;
+template<typename T>
+using shared_future = spoilable_future::future<T, true, false, false>;
+template<typename T>
 using reusable_promise = spoilable_future::promise<T, false, false, true>;
 template<typename T>
 using reusable_future = spoilable_future::future<T, false, false, true>;
@@ -365,6 +391,8 @@ using shared_waitless_reusable_promise = spoilable_future::promise<T, true, true
 template<typename T>
 using shared_waitless_reusable_future = spoilable_future::future<T, true, true, true>;
 
-} // namespace dixelu
+} // namespace tdv
 
-#endif //DIXELU_SPOILABLE_FUTURE_H
+
+
+#endif //SAFMTQ_SPOILABLE_FUTURE_H

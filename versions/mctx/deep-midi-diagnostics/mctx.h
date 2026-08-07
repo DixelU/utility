@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cstdlib>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -72,7 +70,7 @@ struct try_signed
 	using type =
 		__try_signed<
 			T,
-			std::numeric_limits<T>::is_integer && !std::numeric_limits<T>::is_signed
+			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
 		>::type;
 };
 
@@ -95,7 +93,7 @@ struct __opposite_sign_type<T, false>
 	using type =
 		__try_signed<
 			T,
-			std::numeric_limits<T>::is_integer && !std::numeric_limits<T>::is_signed
+			std::numeric_limits<T>::is_integer&& std::numeric_limits<T>::is_signed
 		>::type;
 };
 
@@ -290,10 +288,7 @@ public:
 
 template<typename T>
 using possible_integral_alternative =
-	std::conditional_t<
-		std::is_integral_v<T> && (!std::is_same_v<bool, T>),
-		std::conditional_t<std::is_signed_v<T>, int64_t, uint64_t>,
-		T>;
+	std::conditional_t<std::is_integral_v<T> && (!std::is_same_v<bool, T>), uint64_t, T>;
 
 template<typename T>
 struct as_res
@@ -333,7 +328,6 @@ class mctx
 			std::monostate,
 			bool,
 			uint64_t,
-			int64_t,
 			float,
 			double,
 			string,
@@ -360,7 +354,6 @@ public:
 	class key_value_iter;
 
 	mctx();
-	virtual ~mctx() = default;
 
 	template<typename T>
 	mctx(T&& v) requires integral_constructor_req<T>;
@@ -378,12 +371,6 @@ public:
 
 	mctx& operator=(const mctx&);
 	mctx& operator=(mctx&&) noexcept;
-
-	template<typename T>
-	mctx& operator=(std::initializer_list<T>);
-
-	template<typename T>
-	mctx(std::vector<T>);
 
 	template<typename T>
 	mctx(T v) requires custom_type_reqs<T>;
@@ -408,39 +395,31 @@ public:
 	template<typename T>
 	[[nodiscard]] T get_as(T default_value = T()) const;
 
-	template<typename T>
-	[[nodiscard]] T get(const std::string& key, T default_value = T()) const;
-
-	template<typename T>
-	[[nodiscard]] T get_as(const std::string& key, T default_value = T()) const;
-
 	[[nodiscard]] bool is_none() const;
+
 	[[nodiscard]] bool is_scalar() const;
+
 	[[nodiscard]] bool is_array() const;
+
 	[[nodiscard]] bool is_object() const;
 
-	[[nodiscard]] value_iter find(const std::string& str);
-	[[nodiscard]] value_iter find(const std::string& str) const;
-	[[nodiscard]] value_iter begin();
-	[[nodiscard]] value_iter end();
 	[[nodiscard]] value_iter begin() const;
+
 	[[nodiscard]] value_iter end() const;
 
-	[[nodiscard]] value_iter cbegin() const;
-	[[nodiscard]] value_iter cend() const;
-
 	[[nodiscard]] value_iter rbegin() const;
+
 	[[nodiscard]] value_iter rend() const;
 
+	[[nodiscard]] value_iter find(const std::string& str) const;
+
 	[[nodiscard]] key_value_iter kvfind(const std::string& str);
-	[[nodiscard]] key_value_iter kvfind(const std::string& str) const;
+
 	[[nodiscard]] key_value_iter kvbegin() const;
+
 	[[nodiscard]] key_value_iter kvend() const;
-	[[nodiscard]] key_value_iter kvbegin();
-	[[nodiscard]] key_value_iter kvend();
 
 	value_iter erase(value_iter iter);
-	key_value_iter erase(key_value_iter iter);
 
 	// Container operations
 	mctx& operator[](const std::string& key);
@@ -456,12 +435,8 @@ public:
 	void push_back(mctx value);
 
 	[[nodiscard]] size_t size() const;
-	[[nodiscard]] bool contains(const std::string& str) const;
 
 	void clear();
-	void erase(const std::string& str);
-	value_iter erase(const value_iter& begin, const value_iter& end);
-	key_value_iter erase(const key_value_iter& begin, const key_value_iter& end);
 
 	static mctx make_array();
 	static mctx make_object();
@@ -512,12 +487,7 @@ public:
 	bool operator!=(const value_iter& lhs) const;
 
 	template<typename T>
-	value_iter& __erase(T& target)
-		requires std::is_same_v<T, array> || std::is_same_v<T, object>;
-
-	template<typename T>
-	value_iter& __erase(T& target, const value_iter& end)
-		requires std::is_same_v<T, array> || std::is_same_v<T, object>;
+	value_iter& __erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>;
 
 private:
 	[[nodiscard]] mctx* access() const;
@@ -559,7 +529,6 @@ public:
 	bool operator!=(const key_value_iter& lhs) const;
 
 	key_value_iter& __erase(object& target);
-	key_value_iter& __erase(object& target, const key_value_iter& end);
 
 private:
 	[[nodiscard]] object::value_type* access() const;
@@ -567,46 +536,11 @@ private:
 
 template<typename T>
 mctx::mctx(T&& v) requires integral_constructor_req<T> :
-	var(std::monostate{})
-{
-	using raw_type = std::remove_cvref_t<T>;
-	if constexpr (std::is_signed_v<raw_type>)
-	{
-		if (v < 0)
-			var = static_cast<int64_t>(v);
-		else
-			var = static_cast<uint64_t>(v);
-	}
-	else
-		var = static_cast<uint64_t>(v);
-}
-
-template <typename T>
-mctx::mctx(std::vector<T> values) :
-	var(array{})
-{
-	auto& converted = std::get<array>(var);
-	converted.reserve(values.size());
-	for (auto& value : values)
-		converted.emplace_back(std::move(value));
-}
+	var(static_cast<uint64_t>( static_cast<details::try_unsigned<std::remove_cvref_t<T>>::type>(v))) { }
 
 template <typename T>
 mctx::mctx(T v) requires custom_type_reqs<T> :
 	var(custom{v}) {}
-
-template <typename T>
-mctx& mctx::operator=(std::initializer_list<T> list)
-{
-	array values;
-	values.reserve(list.size());
-
-	for (auto & value : list)
-		values.emplace_back(std::move(value));
-
-	var = std::move(values);
-	return *this;
-}
 
 template<>
 bool mctx::is<mctx::custom>() const;
@@ -616,14 +550,6 @@ bool mctx::is() const
 {
 	if (std::holds_alternative<custom>(this->var))
 		return std::get<custom>(this->var).is<T>();
-
-	if constexpr (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-	{
-		if constexpr (std::is_signed_v<T>)
-			return std::holds_alternative<int64_t>(this->var) ||
-				std::holds_alternative<uint64_t>(this->var);
-		return std::holds_alternative<uint64_t>(this->var);
-	}
 
 	using U = details::possible_integral_alternative<T>;
 	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
@@ -638,18 +564,6 @@ T mctx::get() const
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).get<T>();
 
-	if constexpr (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-	{
-		if (const auto* value = std::get_if<uint64_t>(&this->var))
-			return static_cast<T>(*value);
-		if constexpr (std::is_signed_v<T>)
-		{
-			if (const auto* value = std::get_if<int64_t>(&this->var))
-				return static_cast<T>(*value);
-		}
-		return T();
-	}
-
 	using U = details::possible_integral_alternative<T>;
 	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
 		return static_cast<T>(std::get<U>(this->var));
@@ -662,18 +576,6 @@ T mctx::get(T default_value) const
 {
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).get<T>();
-
-	if constexpr (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-	{
-		if (const auto* value = std::get_if<uint64_t>(&this->var))
-			return static_cast<T>(*value);
-		if constexpr (std::is_signed_v<T>)
-		{
-			if (const auto* value = std::get_if<int64_t>(&this->var))
-				return static_cast<T>(*value);
-		}
-		return default_value;
-	}
 
 	using U = details::possible_integral_alternative<T>;
 	if constexpr (!details::is_in_variant_v<U, decltype(this->var)>)
@@ -694,18 +596,6 @@ const details::as_res<T>::type& mctx::as() const
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).as<T>();
 
-	if constexpr (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-	{
-		if (const auto* value = std::get_if<uint64_t>(&this->var))
-			return *reinterpret_cast<const T*>(value);
-		if constexpr (std::is_signed_v<T>)
-		{
-			if (const auto* value = std::get_if<int64_t>(&this->var))
-				return *reinterpret_cast<const T*>(value);
-		}
-		throw std::runtime_error("Bad as<T> const call");
-	}
-
 	using U = details::possible_integral_alternative<T>;
 	if constexpr (!details::is_in_variant_v<U, decltype(this->var)>)
 		throw std::runtime_error("Bad as<T> const call ");
@@ -723,22 +613,10 @@ const details::as_res<T>::type& mctx::as() const
 }
 
 template<typename T>
-details::as_res<T>::type& mctx::as()
+ details::as_res<T>::type& mctx::as()
 {
 	if (std::holds_alternative<custom>(this->var) && std::get<custom>(this->var).is<T>())
 		return std::get<custom>(this->var).as<T>();
-
-	if constexpr (std::is_integral_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-	{
-		if (auto* value = std::get_if<uint64_t>(&this->var))
-			return *reinterpret_cast<T*>(value);
-		if constexpr (std::is_signed_v<T>)
-		{
-			if (auto* value = std::get_if<int64_t>(&this->var))
-				return *reinterpret_cast<T*>(value);
-		}
-		throw std::runtime_error("Bad as<T> call");
-	}
 
 	if constexpr (!details::is_in_variant_v<typename details::as_res<T>::U, decltype(this->var)>)
 		throw std::runtime_error("Bad as<T> call");
@@ -756,7 +634,7 @@ details::as_res<T>::type& mctx::as()
 }
 
 template<typename T>
-T mctx::get_as(T default_value) const
+inline T mctx::get_as(T default_value) const
 {
 	T value{ std::move(default_value) };
 
@@ -764,24 +642,27 @@ T mctx::get_as(T default_value) const
 		[&](float v) { value = static_cast<T>(v); },
 		[&](double v) { value = static_cast<T>(v); },
 		[&](uint64_t v) { value = static_cast<T>(v); },
-		[&](int64_t v) { value = static_cast<T>(v); },
 		[&](bool v) { value = static_cast<T>(v ? 1 : 0); },
 		[&](const custom& c) { value = c.get<T>(default_value); },
 		[&](const string& v)
 		{
 			if constexpr (std::is_floating_point_v<T>)
 			{
-				char* end = nullptr;
-				const double parsed = strtod(v.c_str(), &end);
-				if (end != v.c_str() && end && *end == '\0')
-					value = static_cast<T>(parsed);
+				char* p = nullptr;
+				double d = strtod(v.c_str(), &p);
+				if (p != nullptr)
+					return;
+
+				value = static_cast<T>(std::stod(v));
 			}
 			else if constexpr (std::is_integral_v<T>)
 			{
-				char* end = nullptr;
-				const long long parsed = strtoll(v.c_str(), &end, 10);
-				if (end != v.c_str() && end && *end == '\0')
-					value = static_cast<T>(parsed);
+				char* p = nullptr;
+				long long ll = strtoll(v.c_str(), &p, 10);
+				if (p != nullptr)
+					return;
+
+				value = static_cast<T>(ll);
 			}
 			else if constexpr (std::is_same_v<T, std::string>)
 				value = v;
@@ -792,32 +673,11 @@ T mctx::get_as(T default_value) const
 	return value;
 }
 
-template <typename T>
-T mctx::get(const std::string& key, T default_value) const
-{
-	auto iter = this->find(key);
-	if (iter == this->end())
-		return default_value;
-
-	return iter->get<T>(default_value);
-}
-
-template <typename T>
-T mctx::get_as(const std::string& key, T default_value) const
-{
-	auto iter = this->find(key);
-	if (iter == this->end())
-		return default_value;
-
-	return iter->get_as<T>(default_value);
-}
-
 template<>
 std::string mctx::get_as<std::string>(std::string default_value) const;
 
-template <typename T>
-mctx::value_iter& mctx::value_iter::__erase(T& target)
-	requires std::is_same_v<T, array> || std::is_same_v<T, object>
+template<typename T>
+mctx::value_iter& mctx::value_iter::__erase(T& target) requires std::is_same_v<T, array> || std::is_same_v<T, object>
 {
 	value_iter new_self;
 
@@ -826,31 +686,6 @@ mctx::value_iter& mctx::value_iter::__erase(T& target)
 		[&](typename T::const_iterator it) { new_self = value_iter{target.erase(it)}; },
 		[](const auto&) { throw std::runtime_error("Bad erase call"); }
 	}, this->val);
-
-	return *this = std::move(new_self);
-}
-
-template<typename T>
-mctx::value_iter& mctx::value_iter::__erase(T& target, const value_iter& end)
-	requires std::is_same_v<T, array> || std::is_same_v<T, object>
-{
-	value_iter new_self;
-
-	std::visit(details::overloaded{
-		[&](typename T::iterator first, typename T::iterator last) {
-			new_self = value_iter{target.erase(first, last)};
-		},
-		[&](typename T::const_iterator first, typename T::const_iterator last) {
-			new_self = value_iter{target.erase(first, last)};
-		},
-		[&](typename T::iterator first, typename T::const_iterator last) {
-			new_self = value_iter{target.erase(first, last)};
-		},
-		[&](typename T::const_iterator first, typename T::iterator last) {
-			new_self = value_iter{target.erase(first, last)};
-		},
-		[](const auto&, const auto&) { throw std::runtime_error("Bad erase call"); }
-	}, this->val, end.val);
 
 	return *this = std::move(new_self);
 }

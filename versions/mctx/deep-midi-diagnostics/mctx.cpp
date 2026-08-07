@@ -156,43 +156,7 @@ bool mctx::is_object() const
 	return std::holds_alternative<object>(this->var);
 }
 
-mctx::value_iter mctx::begin()
-{
-	value_iter it;
-
-	std::visit(details::overloaded{
-		[&it](array& a) { it = value_iter{a.begin()}; },
-		[&it](object& o) { it = value_iter{o.begin()}; },
-		[](const auto &) -> void { }
-	}, this->var);
-
-	return it;
-}
-
-mctx::value_iter mctx::end()
-{
-	value_iter it;
-
-	std::visit(details::overloaded{
-		[&it](array& a) { it = value_iter{a.end()}; },
-		[&it](object& o) { it = value_iter{o.end()}; },
-		[](const auto&) -> void {}
-	}, this->var);
-
-	return it;
-}
-
 mctx::value_iter mctx::begin() const
-{
-	return this->cbegin();
-}
-
-mctx::value_iter mctx::end() const
-{
-	return this->cend();
-}
-
-mctx::value_iter mctx::cbegin() const
 {
 	value_iter it;
 
@@ -205,7 +169,7 @@ mctx::value_iter mctx::cbegin() const
 	return it;
 }
 
-mctx::value_iter mctx::cend() const
+mctx::value_iter mctx::end() const
 {
 	value_iter it;
 
@@ -244,19 +208,6 @@ mctx::value_iter mctx::rend() const
 	return it;
 }
 
-mctx::value_iter mctx::find(const std::string &str)
-{
-	value_iter it;
-
-	std::visit(details::overloaded{
-		[](array&) { throw std::runtime_error("find is not defined for array"); },
-		[&](object& o) { it = value_iter{o.find(str)}; },
-		[](const auto&) -> void {}
-	}, this->var);
-
-	return it;
-}
-
 mctx::value_iter mctx::find(const std::string& str) const
 {
 	value_iter it;
@@ -271,19 +222,6 @@ mctx::value_iter mctx::find(const std::string& str) const
 }
 
 mctx::key_value_iter mctx::kvfind(const std::string& str)
-{
-	key_value_iter it;
-
-	std::visit(details::overloaded{
-		[](const array&) { throw std::runtime_error("find is not defined for array"); },
-		[&](object& o) { it = key_value_iter{o.find(str)}; },
-		[](const auto&) -> void {}
-	}, this->var);
-
-	return it;
-}
-
-mctx::key_value_iter mctx::kvfind(const std::string &str) const
 {
 	key_value_iter it;
 
@@ -322,32 +260,6 @@ mctx::key_value_iter mctx::kvend() const
 	return it;
 }
 
-mctx::key_value_iter mctx::kvbegin()
-{
-	key_value_iter it;
-
-	std::visit(details::overloaded{
-		[](array&) { throw std::runtime_error("find is not defined for array"); },
-		[&](object& o) { it = key_value_iter{o.begin()}; },
-		[](const auto&) -> void {}
-	}, this->var);
-
-	return it;
-}
-
-mctx::key_value_iter mctx::kvend()
-{
-	key_value_iter it;
-
-	std::visit(details::overloaded{
-		[](array&) { throw std::runtime_error("find is not defined for array"); },
-		[&](object& o) { it = key_value_iter{o.end()}; },
-		[](const auto&) -> void {}
-	}, this->var);
-
-	return it;
-}
-
 mctx::value_iter mctx::erase(value_iter iter)
 {
 	value_iter after;
@@ -357,23 +269,11 @@ mctx::value_iter mctx::erase(value_iter iter)
 
 	std::visit(details::overloaded{
 		 array_erase, object_erase,
-		[](const auto&) -> void {} }, this->var);
+	[](const auto&) -> void {} }, this->var);
 
 	return after;
 }
 
-mctx::key_value_iter mctx::erase(key_value_iter iter)
-{
-	key_value_iter after;
-
-	auto object_erase = [&](object& o) { after = iter.__erase(o); };
-
-	std::visit(details::overloaded{
-		object_erase,
-		[](const auto&) -> void {}}, this->var);
-
-	return after;
-}
 
 mctx& mctx::operator[](const std::string& key)
 {
@@ -414,47 +314,7 @@ size_t mctx::size() const
 	return size;
 }
 
-bool mctx::contains(const std::string& str) const
-{
-	auto iter = this->find(str);
-	return iter != this->end();
-}
-
 void mctx::clear() { this->var = std::monostate{}; }
-
-void mctx::erase(const std::string& str)
-{
-	auto iter = this->find(str);
-	if (iter == this->end())
-		return;
-
-	this->erase(iter);
-}
-
-mctx::value_iter mctx::erase(const value_iter& begin, const value_iter& end)
-{
-	auto after = begin;
-
-	auto array_erase = [&](array& a) { after.__erase(a, end); };
-	auto object_erase = [&](object& o) { after.__erase(o, end); };
-
-	std::visit(details::overloaded{
-		 array_erase, object_erase,
-		[](const auto&) -> void {} }, this->var);
-
-	return after;
-}
-
-mctx::key_value_iter mctx::erase(const key_value_iter& begin, const key_value_iter& end)
-{
-	auto after = begin;
-
-	auto object_erase = [&](object& o) { after.__erase(o, end); };
-
-	std::visit(details::overloaded{object_erase, [](const auto&) -> void {} }, this->var);
-
-	return after;
-}
 
 mctx mctx::make_array() { mctx m; m.var = array{}; return m; }
 mctx mctx::make_object() { mctx m; m.var = object{}; return m; }
@@ -583,10 +443,9 @@ template<>
 std::string mctx::get_as<std::string>(std::string result) const
 {
 	std::visit(details::overloaded{
-		[&](const std::monostate&) { /* default_value */ },
+		[&](const std::monostate&) { /* Оставляем default_value */ },
 		[&](bool v) { result = v ? "true" : "false"; },
 		[&](uint64_t v) { result = std::to_string(v); },
-		[&](int64_t v) { result = std::to_string(v); },
 		[&](float v) { result = std::format("{}", v); },
 		[&](double v) { result = std::format("{}", v); },
 		[&](const std::string& v) { result = v; },
@@ -597,8 +456,8 @@ std::string mctx::get_as<std::string>(std::string result) const
 			else
 				result = c.get_type_name();
 		},
-		[&](const array&) { result = "[array]"; },
-		[&](const object&) { result = "{object}"; }
+		[&](const array& a) { result = "[array]"; },
+		[&](const object& o) { result = "{object}"; }
 	}, this->var);
 
 	return result;
@@ -611,19 +470,6 @@ mctx::key_value_iter& mctx::key_value_iter::__erase(object& target)
 	std::visit(details::overloaded{
 		[&](object::iterator it) { new_self = key_value_iter{target.erase(it)}; },
 		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it)}; },
-		[](const auto&) { throw std::runtime_error("Bad erase call"); }
-	}, this->val);
-
-	return *this = std::move(new_self);
-}
-
-mctx::key_value_iter& mctx::key_value_iter::__erase(object& target, const key_value_iter& end)
-{
-	key_value_iter new_self;
-
-	std::visit(details::overloaded{
-		[&](object::iterator it) { new_self = key_value_iter{target.erase(it, std::get<object::iterator>(end.val))}; },
-		[&](object::const_iterator it) { new_self = key_value_iter{target.erase(it, std::get<object::const_iterator>(end.val))}; },
 		[](const auto&) { throw std::runtime_error("Bad erase call"); }
 	}, this->val);
 
