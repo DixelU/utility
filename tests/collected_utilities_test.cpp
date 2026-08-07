@@ -1,7 +1,12 @@
 #include <atomic>
 #include <array>
+#include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -11,12 +16,14 @@
 
 #include "buffered_object_pool.h"
 #include "buffered_queue_spsc.h"
+#include "buffered_file_reader.h"
 #include "base64.h"
 #include "fixed_string.h"
 #include "function_ref.h"
 #include "ip_routing.h"
 #include "mctx.h"
 #include "mctx_json.h"
+#include "memory_mapped_file_reader.h"
 #include "on_destroy_executor.h"
 #include "scope_exit.h"
 #include "spoilable_future.h"
@@ -59,6 +66,35 @@ struct counted_value
 	explicit counted_value(int value) : value(value) { ++live; }
 	~counted_value() { --live; }
 };
+
+std::filesystem::path test_file_path(const char* suffix)
+{
+	static std::atomic_uint counter = 0;
+	const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("dixelu_utility_" + std::to_string(stamp) + "_" +
+			std::to_string(counter.fetch_add(1, std::memory_order_relaxed)) + suffix);
+}
+
+std::filesystem::path test_unicode_file_path(const char8_t* suffix)
+{
+	auto result = test_file_path("");
+	result += std::filesystem::path(suffix);
+	return result;
+}
+
+void write_test_file(const std::filesystem::path& path, std::span<const std::byte> bytes)
+{
+	std::ofstream output(path, std::ios::binary | std::ios::trunc);
+	require(output.is_open(), "test fixture file must open for writing");
+	if (!bytes.empty())
+	{
+		output.write(
+			reinterpret_cast<const char*>(bytes.data()),
+			static_cast<std::streamsize>(bytes.size()));
+	}
+	require(output.good(), "test fixture bytes must be written");
+}
 
 void test_numeric_traits()
 {
@@ -233,6 +269,130 @@ void test_spsc_queue()
 	require(queue.empty(), "SPSC queue clear must remove all elements");
 }
 
+void test_buffered_file_reader()
+{
+#ifdef _WIN32
+	static_assert(std::is_same_v<std::filesystem::path::value_type, wchar_t>);
+#endif
+	require(
+		throws_invalid_argument([] { dixelu::buffered_file_reader invalid(0); }),
+		"buffered reader must reject a zero-sized buffer");
+
+	const auto exact_path = test_unicode_file_path(u8"_\u0444\u0430\u0439\u043b.bin");
+	const auto empty_path = test_file_path("_empty.bin");
+	const auto missing_path = test_file_path("_missing.bin");
+	const std::array<std::byte, 8> bytes{
+		std::byte{0}, std::byte{1}, std::byte{2}, std::byte{3},
+		std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}};
+	write_test_file(exact_path, bytes);
+	write_test_file(empty_path, {});
+	auto cleanup = dixelu::make_scope_exit([&] {
+		std::error_code ignored;
+		std::filesystem::remove(exact_path, ignored);
+		std::filesystem::remove(empty_path, ignored);
+	});
+
+	dixelu::buffered_file_reader reader(exact_path, 4);
+	require(reader.is_open() && reader.size() == bytes.size(), "buffered reader must open a binary file");
+	for (unsigned int expected = 0; expected < bytes.size(); ++expected)
+	{
+		const auto value = reader.get();
+		require(
+			value && std::to_integer<unsigned int>(*value) == expected,
+			"buffered reader must preserve every byte, including zero");
+	}
+	require(reader.eof(), "an exact chunk-boundary read must reach EOF after the last byte");
+	require(!reader.get(), "buffered reader must represent EOF separately from byte zero");
+
+	require(reader.seek(3), "buffered reader must seek within the file");
+	const auto sought_value = reader.get();
+	require(
+		sought_value && std::to_integer<unsigned int>(*sought_value) == 3,
+		"buffered seek must set the next byte");
+	require(!reader.seek(bytes.size() + 1), "buffered reader must reject seeks beyond EOF");
+	require(reader.position() == 4, "a rejected buffered seek must preserve position");
+	require(reader.seek(1), "buffered reader must seek before a bulk read");
+	std::array<std::byte, 3> bulk{};
+	require(reader.read(bulk) == bulk.size(), "buffered reader must fill a bulk destination");
+	require(
+		bulk[0] == std::byte{1} && bulk[2] == std::byte{3},
+		"buffered bulk read must preserve byte order");
+	require(reader.seek(4), "buffered reader must seek to a chunk boundary");
+	std::ostringstream output;
+	require(reader.copy_to(output) == 4, "buffered copy must report consumed bytes");
+	require(output.str() == std::string("\x04\x05\x06\x07", 4), "buffered copy must preserve remaining data");
+	require(reader.is_open() && reader.eof(), "buffered copy must not close its owned file");
+
+	require(reader.reopen(empty_path), "buffered reader must reopen an empty file");
+	require(reader.is_open() && reader.size() == 0 && reader.eof(), "empty file must be a valid open EOF state");
+	require(!reader.reopen(missing_path), "buffered reader must report failed reopen");
+	require(!reader.is_open() && reader.last_error(), "failed buffered reopen must leave a closed error state");
+	require(reader.open(exact_path), "buffered reader must recover after a failed open");
+
+	dixelu::buffered_file_reader moved(std::move(reader));
+	require(!reader.is_open() && moved.is_open(), "buffered reader move must transfer file ownership");
+	moved.close();
+	moved.close();
+	require(!moved.is_open(), "buffered reader close must be idempotent");
+}
+
+void test_memory_mapped_file_reader()
+{
+	const auto exact_path = test_unicode_file_path(u8"_\u043a\u0430\u0440\u0442\u0430.bin");
+	const auto empty_path = test_file_path("_mapped_empty.bin");
+	const auto missing_path = test_file_path("_mapped_missing.bin");
+	const std::array<std::byte, 8> bytes{
+		std::byte{0}, std::byte{1}, std::byte{2}, std::byte{3},
+		std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}};
+	write_test_file(exact_path, bytes);
+	write_test_file(empty_path, {});
+	auto cleanup = dixelu::make_scope_exit([&] {
+		std::error_code ignored;
+		std::filesystem::remove(exact_path, ignored);
+		std::filesystem::remove(empty_path, ignored);
+	});
+
+	dixelu::memory_mapped_file_reader reader(exact_path);
+	require(reader.is_open() && reader.size() == bytes.size(), "mapped reader must open a binary file");
+	require(reader.bytes().size() == bytes.size(), "mapped reader must expose the complete byte view");
+	for (unsigned int expected = 0; expected < bytes.size(); ++expected)
+	{
+		const auto value = reader.get();
+		require(
+			value && std::to_integer<unsigned int>(*value) == expected,
+			"mapped reader must preserve every byte, including zero");
+	}
+	require(reader.eof() && !reader.get(), "mapped reader must report EOF after the last byte");
+
+	require(reader.seek(3), "mapped reader must seek within the file");
+	const auto sought_value = reader.get();
+	require(
+		sought_value && std::to_integer<unsigned int>(*sought_value) == 3,
+		"mapped seek must set the next byte");
+	require(!reader.seek(bytes.size() + 1), "mapped reader must reject seeks beyond EOF");
+	require(reader.position() == 4, "a rejected mapped seek must preserve position");
+	require(reader.seek(1), "mapped reader must seek before a bulk read");
+	std::array<std::byte, 3> bulk{};
+	require(reader.read(bulk) == bulk.size(), "mapped reader must fill a bulk destination");
+	require(
+		bulk[0] == std::byte{1} && bulk[2] == std::byte{3},
+		"mapped bulk read must preserve byte order");
+
+	require(reader.reopen(empty_path), "mapped reader must reopen an empty file");
+	require(
+		reader.is_open() && reader.data() == nullptr && reader.bytes().empty() && reader.eof(),
+		"empty mapping must be a valid open EOF state without a fake pointer");
+	require(!reader.reopen(missing_path), "mapped reader must report failed reopen");
+	require(!reader.is_open() && reader.last_error(), "failed mapped reopen must leave a closed error state");
+	require(reader.open(exact_path), "mapped reader must recover after a failed open");
+
+	dixelu::memory_mapped_file_reader moved(std::move(reader));
+	require(!reader.is_open() && moved.is_open(), "mapped reader move must transfer native ownership");
+	moved.close();
+	moved.close();
+	require(!moved.is_open(), "mapped reader close must be idempotent");
+}
+
 void test_native_literal()
 {
 	constexpr auto literal = dixelu::to_native_literal("utility");
@@ -330,6 +490,8 @@ int main()
 	test_legacy_scope_and_future_regressions();
 	test_object_pool();
 	test_spsc_queue();
+	test_buffered_file_reader();
+	test_memory_mapped_file_reader();
 	test_native_literal();
 	test_base64_and_url();
 	test_ip_routing();

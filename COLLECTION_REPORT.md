@@ -31,6 +31,13 @@ trees were excluded.
   padding and trailing-bit validation and no project exception dependency.
 - `include/url.h`: rewrote SAF-AVTTS URL parsing/encoding with query-only target,
   fragment, bracketed IPv6, numeric port and port-range handling.
+- `include/buffered_file_reader.h` and `include/memory_mapped_file_reader.h`:
+  replaced the six unsafe `bbb_ffio` editions with separate checked RAII
+  readers. EOF no longer aliases byte zero; empty files, failed opens, exact
+  chunk boundaries, checked seek/reopen, move ownership and idempotent close
+  are covered by regression tests. Both accept `std::filesystem::path`, whose
+  native character type is wide on Windows under MSVC and MinGW; a UTF-8-derived
+  Cyrillic filename is covered without an ANSI-path fallback.
 - `include/on_destroy_executor.h`: fixed moved-from double execution, added
   dismissal, and made move assignment dispose its existing action.
 - `include/spoilable_future.h`: fixed the self-referential `using status =
@@ -53,20 +60,17 @@ trees were excluded.
 
 ### P1: next implementations worth doing
 
-1. Replace the six `bbb_ffio` editions with separate RAII buffered-file and
-   memory-mapped readers. Cover empty/failed open, exact chunk boundaries,
-   seek/reopen, EOF and close ownership.
-2. Rewrite `background_worker` around `std::jthread`, explicit drain versus
+1. Rewrite `background_worker` around `std::jthread`, explicit drain versus
    cancel shutdown, exception handling, push-after-stop reporting, and no
    global dangling-reference registry.
-3. Validate `long_uint`, `math_utils`, and both matrix APIs with randomized
+2. Validate `long_uint`, `math_utils`, and both matrix APIs with randomized
    Boost.Multiprecision/reference tests before promotion. Known high-value fixes
    include dynamic-matrix dimension comparison/minmax initialization and fixed
    matrix transpose/power defects.
-4. Extract generic `polyline_converter` only after defining interpolation,
+3. Extract generic `polyline_converter` only after defining interpolation,
    extrapolation and invalid-result policy; the old 14-bit fallback changed
    from `0x2000` to invalid `0x4000` between editions.
-5. Package MemoryObserver process-memory support as an optional Windows target
+4. Package MemoryObserver process-memory support as an optional Windows target
    after licensing is resolved.
 
 ### P2: useful but coupled or lower confidence
@@ -93,3 +97,9 @@ domain-specific, or had helpers too unsafe/coupled to copy.
 The root build covers promoted headers and repaired legacy utilities. Archived
 editions under `versions/` are intentionally not compiled and must not be
 described as validated production code.
+
+The promoted file readers compile and pass their Unicode-path runtime test with
+GCC 16.1.0/MinGW and the Visual Studio 2026 MSVC 14.51 toolset. The MSVC reader
+probe was compiled independently of the root `mctx_json` target because that
+legacy target currently obtains `nlohmann/json.hpp` from a MinGW-only include
+tree.

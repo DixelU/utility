@@ -26,7 +26,7 @@ available in the scanned repositories are under `versions/licenses/`:
 | `buffered_queue_spsc` | SAFC_v1, bitreverse | Root header merges configurable slabs/emplace with const access and safer initialization. |
 | `buffered_object_pool` | bitreverse | Root header promotes a documented, dependency-free edition. |
 | function wrapper/reference | 6 | Raw editions stay archived for license/history; root `function_ref` is independently implemented. |
-| `bbb_ffio` file readers | 6 | Do not promote unchanged; rewrite as checked RAII buffered and mapped readers. |
+| `bbb_ffio` file readers | 6 | Rewritten as checked root RAII buffered and mapped readers; raw editions remain archive-only. |
 | `header_utils` | 6 | Split by responsibility; scope guard and native literal were promoted separately. |
 | allocator | 2 | Archive only; prefer a modern `std::pmr`-compatible design. |
 | background worker | 2 generations | Archive pending a `std::jthread` rewrite with explicit drain/cancel semantics. |
