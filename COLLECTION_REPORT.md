@@ -54,6 +54,20 @@ trees were excluded.
   exact nonnegative floor integer roots (including `long_uint`), and standard-library
   runtime floating square-root/power behavior. Negative-base integer powers now
   apply sign by exponent parity.
+- `include/matrix.h` and `include/sq_matrix.h`: independently rewrote the
+  dynamic and fixed-square matrix editions around one `(row, column)` contract.
+  Dynamic storage is always rectangular, checked access and incompatible shapes
+  throw, equality includes both dimensions, and finite `minmax` initializes from
+  an actual element. Fixed transpose swaps only the upper triangle, both power
+  paths handle negative and minimum signed exponents without overflow, and
+  singular inverse/solve operations report failure instead of returning zeros.
+- `include/polyline_converter.h`: replaced the three implicit-policy editions
+  with widened linear interpolation and explicit reject, clamp or linear
+  extrapolation. Empty and invalid queries return `std::optional`, duplicate
+  keys report inserted/replaced/unchanged status, non-finite points are
+  rejected, and checked integral conversion exposes its rounding mode. Generic
+  lookup tables retain invalid entries; MIDI 14-bit callers may materialize
+  `0x4000` deliberately instead of aliasing invalid input to slot `0x2000`.
 - `include/on_destroy_executor.h`: fixed moved-from double execution, added
   dismissal, and made move assignment dispose its existing action.
 - `include/spoilable_future.h`: fixed the self-referential `using status =
@@ -74,18 +88,7 @@ trees were excluded.
 3. Do not import embedded third-party B-tree, SimpleJSON, WinReg, Raylib or
    proof-of-concept encryption code as utility-owned source.
 
-### P1: next implementations worth doing
-
-1. Validate both matrix APIs with randomized reference tests before promotion.
-   Known high-value fixes include dynamic-matrix dimension comparison/minmax
-   initialization and fixed matrix transpose/power defects.
-2. Extract generic `polyline_converter` only after defining interpolation,
-   extrapolation and invalid-result policy; the old 14-bit fallback changed
-   from `0x2000` to invalid `0x4000` between editions.
-3. Package MemoryObserver process-memory support as an optional Windows target
-   after licensing is resolved.
-
-### P2: useful but coupled or lower confidence
+### Remaining: useful but coupled or lower confidence
 
 - Split SAF-MTQ `ContextPath`, MetaSDK utilities, UUID/timestamp, packed-index,
   queue and bit helpers by dependency and responsibility.
@@ -95,6 +98,11 @@ trees were excluded.
   now-promoted packet routing, Base64 and URL utilities.
 - Revisit bitreverse `counted_ptr` as an explicitly single-threaded pointer
   after pool lifetime/debug-diagnostic work and deep-chain regression coverage.
+
+### Deferred from the current consolidation
+
+- MemoryObserver process-memory/view support remains archived. The user removed
+  it from the active migration queue for now; no root Windows target is planned.
 
 ## Repositories without a promoted candidate
 
@@ -123,3 +131,18 @@ square/cube roots, and 100 randomized 128-bit roots. It is built when
 MSVC 14.51 `/W4 /WX /permissive-` probe compiles and runs the promoted worker,
 `long_uint`, and integer-root APIs without relying on the MinGW-only Boost
 installation.
+
+The independent matrix reference suite covers 2,000 randomized dynamic
+rectangular arithmetic/transpose cases, 750 dynamic power/determinant cases,
+500 dynamic inverse/solve cases, 2,000 fixed-size arithmetic/transpose/power/
+determinant cases across dimensions one through four, and 500 fixed inverse/
+solve cases. Determinants are checked against a separate recursive cofactor
+implementation rather than the promoted elimination algorithm. The matrix
+headers also compile and run in an isolated Visual Studio 2026 MSVC 14.51
+`/W4 /WX /permissive-` probe.
+
+The polyline regression suite covers 90,000 independently calculated randomized
+queries across reject, clamp and linear extrapolation, plus exact-point,
+single/empty-curve, duplicate-key, unsigned intermediate, rounding, narrowing
+and byte/MIDI lookup-table boundaries. Its isolated Visual Studio 2026 MSVC
+14.51 `/W4 /WX /permissive-` probe also compiles and runs successfully.

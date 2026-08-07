@@ -40,3 +40,22 @@ integer roots; odd negative inputs use the floor of the magnitude and preserve
 the sign.
 When Boost.Multiprecision is installed, CMake adds the randomized
 `numeric_utilities_test` reference suite.
+
+`dixelu::matrix<T>` is the dynamic rectangular API and
+`dixelu::sq_matrix<T, N>` (also `fixed_matrix<T, N>`) is the fixed square API.
+Both use `(row, column)` coordinates and row-first `matrix[row][column]`
+indexing. Checked `at` calls throw on invalid coordinates; dynamic elementwise
+operations require identical shapes, multiplication requires compatible inner
+dimensions, and square-only operations reject rectangular input. Floating-point
+inverse and solve throw for singular matrices. `minmax` ignores non-finite
+floating values and throws when none remain. The fixed API provides
+`transposed()` for a copy and `transpose()` for in-place mutation.
+
+`dixelu::polyline_converter<Key, Value>` evaluates a finite set of ordered
+points using widened linear arithmetic. Interpolation between points is always
+enabled; outside queries explicitly select `reject`, `clamp`, or `linear`
+extrapolation. Empty curves and invalid results use `std::optional`, while
+`at()` throws when a result is unavailable. Checked integral conversion names
+its rounding policy and rejects values outside the destination range.
+`polyline_lookup_table` stores optional entries; `materialize(fallback)` is the
+only operation that replaces invalid entries with a sentinel.

@@ -42,6 +42,14 @@ add_executable(collected_utilities_test
 )
 target_link_libraries(collected_utilities_test PRIVATE Threads::Threads)
 
+add_executable(matrix_utilities_test
+	tests/matrix_utilities_test.cpp
+)
+
+add_executable(polyline_converter_test
+	tests/polyline_converter_test.cpp
+)
+
 if (HAVE_BOOST_MULTIPRECISION)
 	add_executable(numeric_utilities_test
 		tests/numeric_utilities_test.cpp
@@ -52,6 +60,8 @@ if (BUILD_TESTING)
 	add_test(NAME mctx_test COMMAND mctx_test)
 	add_test(NAME mctx_raw_stress_test COMMAND mctx_raw_stress_test)
 	add_test(NAME collected_utilities_test COMMAND collected_utilities_test)
+	add_test(NAME matrix_utilities_test COMMAND matrix_utilities_test)
+	add_test(NAME polyline_converter_test COMMAND polyline_converter_test)
 	if (HAVE_BOOST_MULTIPRECISION)
 		add_test(NAME numeric_utilities_test COMMAND numeric_utilities_test)
 	endif ()
