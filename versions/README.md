@@ -29,8 +29,9 @@ available in the scanned repositories are under `versions/licenses/`:
 | `bbb_ffio` file readers | 6 | Rewritten as checked root RAII buffered and mapped readers; raw editions remain archive-only. |
 | `header_utils` | 6 | Split by responsibility; scope guard and native literal were promoted separately. |
 | allocator | 2 | Archive only; prefer a modern `std::pmr`-compatible design. |
-| background worker | 2 generations | Archive pending a `std::jthread` rewrite with explicit drain/cancel semantics. |
-| integer/math/matrix | current plus legacy | Archive pending provenance and randomized correctness tests. |
+| background worker | 2 generations | Rewritten as a root `std::jthread` worker with explicit drain/cancel and exception contracts. |
+| integer/math | current plus legacy | Independently rewritten and promoted after Boost/reference tests; raw editions remain archive-only. |
+| matrix | dynamic plus fixed | Archive pending randomized correctness tests and known defect repairs. |
 | fixed stack string | SAF-MTQ | Root `fixed_string` repairs capacity/length/hash issues. |
 | thread pool | SAF-MTQ | Archive only; current version has locking and dependency problems. |
 | polyline interpolation | SAFC_v1, SAFC_v2, xSYS | Archive pending an explicit boundary/fallback policy and tests. |

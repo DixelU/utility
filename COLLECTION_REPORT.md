@@ -38,6 +38,22 @@ trees were excluded.
   are covered by regression tests. Both accept `std::filesystem::path`, whose
   native character type is wide on Windows under MSVC and MinGW; a UTF-8-derived
   Cyrillic filename is covered without an ANSI-path fallback.
+- `include/background_worker.h`: replaced both archived workers with a
+  `std::jthread` FIFO executor. Drain and cancel shutdown are distinct, pending
+  cancellation is counted, active work receives a cooperative stop token,
+  post-stop and empty submissions are reported, move-only tasks are accepted,
+  and task/handler exceptions cannot terminate the worker. The tag singleton
+  remains available without the old dangling-reference registry.
+- `include/long_uint.h`: independently rewrote the recursive editions as a
+  fixed-width little-endian limb integer (`long_uint<0>` is 128-bit, and each
+  degree doubles the width). Arithmetic is explicitly modulo the width;
+  divide-by-zero throws, oversized shifts produce zero, and decimal parsing
+  rejects invalid input and overflow.
+- `include/math_utils.h`: replaced the legacy macro-heavy approximations with
+  corrected sign traits, checked absolute value, exponentiation by squaring,
+  exact nonnegative floor integer roots (including `long_uint`), and standard-library
+  runtime floating square-root/power behavior. Negative-base integer powers now
+  apply sign by exponent parity.
 - `include/on_destroy_executor.h`: fixed moved-from double execution, added
   dismissal, and made move assignment dispose its existing action.
 - `include/spoilable_future.h`: fixed the self-referential `using status =
@@ -60,17 +76,13 @@ trees were excluded.
 
 ### P1: next implementations worth doing
 
-1. Rewrite `background_worker` around `std::jthread`, explicit drain versus
-   cancel shutdown, exception handling, push-after-stop reporting, and no
-   global dangling-reference registry.
-2. Validate `long_uint`, `math_utils`, and both matrix APIs with randomized
-   Boost.Multiprecision/reference tests before promotion. Known high-value fixes
-   include dynamic-matrix dimension comparison/minmax initialization and fixed
-   matrix transpose/power defects.
-3. Extract generic `polyline_converter` only after defining interpolation,
+1. Validate both matrix APIs with randomized reference tests before promotion.
+   Known high-value fixes include dynamic-matrix dimension comparison/minmax
+   initialization and fixed matrix transpose/power defects.
+2. Extract generic `polyline_converter` only after defining interpolation,
    extrapolation and invalid-result policy; the old 14-bit fallback changed
    from `0x2000` to invalid `0x4000` between editions.
-4. Package MemoryObserver process-memory support as an optional Windows target
+3. Package MemoryObserver process-memory support as an optional Windows target
    after licensing is resolved.
 
 ### P2: useful but coupled or lower confidence
@@ -103,3 +115,11 @@ GCC 16.1.0/MinGW and the Visual Studio 2026 MSVC 14.51 toolset. The MSVC reader
 probe was compiled independently of the root `mctx_json` target because that
 legacy target currently obtains `nlohmann/json.hpp` from a MinGW-only include
 tree.
+
+The Boost.Multiprecision numerical regression covers 1,500 randomized 128-bit
+and 500 randomized 256-bit arithmetic cases, 20,000 randomized native integer
+square/cube roots, and 100 randomized 128-bit roots. It is built when
+`boost/multiprecision/cpp_int.hpp` is available. A separate Visual Studio 2026
+MSVC 14.51 `/W4 /WX /permissive-` probe compiles and runs the promoted worker,
+`long_uint`, and integer-root APIs without relying on the MinGW-only Boost
+installation.

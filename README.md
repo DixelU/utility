@@ -25,3 +25,18 @@ the wide Win32 file API. `dixelu::native_string` in `unicode_literal.h` retains
 the old `std_unicode_string`-style native character alias for other APIs; its
 literal helper intentionally handles ASCII literals rather than runtime UTF-8
 transcoding.
+
+`dixelu::background_worker` is a one-thread FIFO executor. `shutdown(drain)`
+finishes every accepted task; `shutdown(cancel)` discards pending work and sends
+a cooperative `std::stop_token` to the active task. Submissions return an
+explicit accepted/empty/stopped result, and destruction drains by default.
+
+`dixelu::long_uint<Degree>` provides fixed-width unsigned modular arithmetic;
+degree zero is 128-bit and each following degree doubles the width. Division by
+zero throws, shifts at least as large as the width return zero, and checked
+decimal parsing is available through `from_decimal`. `math_utils.h` provides
+checked absolute value, corrected integer powers, and exact nonnegative floor
+integer roots; odd negative inputs use the floor of the magnitude and preserve
+the sign.
+When Boost.Multiprecision is installed, CMake adds the randomized
+`numeric_utilities_test` reference suite.

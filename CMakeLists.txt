@@ -7,7 +7,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(CTest)
+include(CheckIncludeFileCXX)
 find_package(Threads REQUIRED)
+check_include_file_cxx("boost/multiprecision/cpp_int.hpp" HAVE_BOOST_MULTIPRECISION)
 
 # if (UNIX)
 #	add_compile_options(-fsanitize=address -fsanitize-address-use-after-scope -fsanitize=leak -fsanitize=undefined -fsanitize=pointer-overflow -fsanitize=signed-integer-overflow -fsanitize=alignment -fstack-protector-strong)
@@ -40,8 +42,17 @@ add_executable(collected_utilities_test
 )
 target_link_libraries(collected_utilities_test PRIVATE Threads::Threads)
 
+if (HAVE_BOOST_MULTIPRECISION)
+	add_executable(numeric_utilities_test
+		tests/numeric_utilities_test.cpp
+	)
+endif ()
+
 if (BUILD_TESTING)
 	add_test(NAME mctx_test COMMAND mctx_test)
 	add_test(NAME mctx_raw_stress_test COMMAND mctx_raw_stress_test)
 	add_test(NAME collected_utilities_test COMMAND collected_utilities_test)
+	if (HAVE_BOOST_MULTIPRECISION)
+		add_test(NAME numeric_utilities_test COMMAND numeric_utilities_test)
+	endif ()
 endif ()

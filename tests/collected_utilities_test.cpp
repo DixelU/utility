@@ -5,8 +5,11 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
+#include <memory>
 #include <span>
 #include <sstream>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -17,6 +20,7 @@
 #include "buffered_object_pool.h"
 #include "buffered_queue_spsc.h"
 #include "buffered_file_reader.h"
+#include "background_worker.h"
 #include "base64.h"
 #include "fixed_string.h"
 #include "function_ref.h"
@@ -269,6 +273,124 @@ void test_spsc_queue()
 	require(queue.empty(), "SPSC queue clear must remove all elements");
 }
 
+void test_background_worker()
+{
+	using dixelu::background_worker_shutdown;
+	using dixelu::background_worker_state;
+	using dixelu::background_worker_submit_result;
+
+	std::vector<int> order;
+	dixelu::background_worker draining;
+	require(
+		draining.push(dixelu::background_worker::task_type{}) ==
+			background_worker_submit_result::empty_task,
+		"background worker must report an empty task without accepting it");
+	for (int value = 0; value < 32; ++value)
+	{
+		auto owned = std::make_unique<int>(value);
+		require(
+			draining.push([owned = std::move(owned), &order] { order.push_back(*owned); }) ==
+				background_worker_submit_result::accepted,
+			"background worker must accept move-only tasks while running");
+	}
+	draining.shutdown(background_worker_shutdown::drain);
+	draining.shutdown(background_worker_shutdown::drain);
+	for (int value = 0; value < 32; ++value)
+		require(order[static_cast<std::size_t>(value)] == value, "drain shutdown must preserve FIFO order");
+	const auto drained = draining.snapshot();
+	require(
+		drained.state == background_worker_state::stopped && drained.submitted == 32 &&
+			drained.completed == 32 && drained.failed == 0 && drained.cancelled == 0,
+		"drain shutdown must complete every accepted task and remain stopped when repeated");
+	require(
+		draining.push([] {}) == background_worker_submit_result::stopped,
+		"push after shutdown must report rejection");
+
+	std::atomic_uint exception_reports = 0;
+	std::atomic_uint continued_tasks = 0;
+	dixelu::background_worker exception_worker(
+		background_worker_shutdown::drain,
+		[&](std::exception_ptr exception) {
+			try
+			{
+				std::rethrow_exception(exception);
+			}
+			catch (const std::runtime_error&)
+			{
+				++exception_reports;
+			}
+			throw std::logic_error("handler failures must also be contained");
+		});
+	require(
+		exception_worker.push([] { throw std::runtime_error("task failure"); }) ==
+			background_worker_submit_result::accepted,
+		"throwing task must still be accepted");
+	exception_worker.push([&] { ++continued_tasks; });
+	exception_worker.shutdown(background_worker_shutdown::drain);
+	const auto exception_snapshot = exception_worker.snapshot();
+	require(
+		exception_reports == 1 && continued_tasks == 1 && exception_snapshot.failed == 1 &&
+			exception_snapshot.completed == 1 && exception_worker.last_exception(),
+		"task and handler exceptions must be reported without terminating the worker");
+
+	std::promise<void> active_started;
+	auto active_started_future = active_started.get_future();
+	std::atomic_uint cancelled_task_runs = 0;
+	std::atomic_uint stop_callback_runs = 0;
+	dixelu::background_worker cancelling(background_worker_shutdown::cancel);
+	cancelling.push([&](std::stop_token stop_token) {
+		std::stop_callback callback(stop_token, [&] {
+			++stop_callback_runs;
+			(void)cancelling.snapshot();
+		});
+		active_started.set_value();
+		while (!stop_token.stop_requested())
+			std::this_thread::yield();
+	});
+	cancelling.push([&] { ++cancelled_task_runs; });
+	cancelling.push([&] { ++cancelled_task_runs; });
+	active_started_future.wait();
+	cancelling.shutdown(background_worker_shutdown::cancel);
+	const auto cancelled = cancelling.snapshot();
+	require(
+		cancelled_task_runs == 0 && stop_callback_runs == 1 && cancelled.started == 1 && cancelled.completed == 1 &&
+			cancelled.cancelled == 2 && cancelled.state == background_worker_state::stopped,
+		"cancel shutdown must stop cooperatively and count discarded pending tasks");
+
+	std::promise<void> self_started;
+	std::promise<void> allow_self_shutdown;
+	std::promise<void> self_finished;
+	auto self_started_future = self_started.get_future();
+	auto allow_self_shutdown_future = allow_self_shutdown.get_future();
+	auto self_finished_future = self_finished.get_future();
+	std::atomic_uint self_cancelled_task_runs = 0;
+	dixelu::background_worker self_stopping(background_worker_shutdown::cancel);
+	self_stopping.push([&] {
+		self_started.set_value();
+		allow_self_shutdown_future.wait();
+		self_stopping.shutdown(background_worker_shutdown::cancel);
+		self_finished.set_value();
+	});
+	self_started_future.wait();
+	require(
+		self_stopping.push([&] { ++self_cancelled_task_runs; }) ==
+			background_worker_submit_result::accepted,
+		"worker must accept pending work before self-shutdown");
+	allow_self_shutdown.set_value();
+	self_finished_future.wait();
+	self_stopping.shutdown(background_worker_shutdown::cancel);
+	require(
+		self_cancelled_task_runs == 0 && self_stopping.snapshot().cancelled == 1,
+		"shutdown from a worker task must not deadlock and must cancel pending work");
+
+	std::atomic_uint destructor_drained = 0;
+	{
+		dixelu::background_worker destructor_worker;
+		destructor_worker.push([&] { ++destructor_drained; });
+	}
+	require(destructor_drained == 1, "default destruction must drain accepted work");
+}
+
 void test_buffered_file_reader()
 {
 #ifdef _WIN32
@@ -490,6 +612,7 @@ int main()
 	test_legacy_scope_and_future_regressions();
 	test_object_pool();
 	test_spsc_queue();
+	test_background_worker();
 	test_buffered_file_reader();
 	test_memory_mapped_file_reader();
 	test_native_literal();
