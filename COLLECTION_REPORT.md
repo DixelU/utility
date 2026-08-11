@@ -1,6 +1,6 @@
 # C++ utility consolidation report
 
-Date: 2026-08-07
+Initial scan: 2026-08-07. Last updated: 2026-08-11.
 
 Scope: top-level repositories under `C:\Users\User\git` plus the named
 `SAF*`, `WorldWars`, `MemoryObserver`, and `DeepMidiDiagnostics` repositories
@@ -68,6 +68,15 @@ trees were excluded.
   rejected, and checked integral conversion exposes its rounding mode. Generic
   lookup tables retain invalid entries; MIDI 14-bit callers may materialize
   `0x4000` deliberately instead of aliasing invalid input to slot `0x2000`.
+- `include/context_path.h`, `include/context_path_serializer.h`, and
+  `include/linked_context_wrapper.h`: promoted the already-`mctx`-adapted
+  SAF-MTQ `ContextPath` without a redundant context abstraction. The 705-line
+  header and 1,716-line source were separated into traversal/query, parser, and
+  linked-view responsibilities plus bounded implementation chunks. Empty paths,
+  checked indices, array erasure, sequential variable binding, signed/unsigned
+  query equality, escaped parsing, malformed-input rejection, safe null access,
+  link cycles and rendered diff forwarding now have explicit behavior. The
+  original `<ContextPath.h>` spelling remains as a compatibility umbrella.
 - `include/on_destroy_executor.h`: fixed moved-from double execution, added
   dismissal, and made move assignment dispose its existing action.
 - `include/spoilable_future.h`: fixed the self-referential `using status =
@@ -90,7 +99,7 @@ trees were excluded.
 
 ### Remaining: useful but coupled or lower confidence
 
-- Split SAF-MTQ `ContextPath`, MetaSDK utilities, UUID/timestamp, packed-index,
+- Split the remaining SAF-MTQ MetaSDK utilities, UUID/timestamp, packed-index,
   queue and bit helpers by dependency and responsibility.
 - Rewrite DeepMidi expression parsing; its current precedence condition is
   unreachable and its shared evaluator state is not thread-safe.
@@ -146,3 +155,14 @@ queries across reject, clamp and linear extrapolation, plus exact-point,
 single/empty-curve, duplicate-key, unsigned intermediate, rounding, narrowing
 and byte/MIDI lookup-table boundaries. Its isolated Visual Studio 2026 MSVC
 14.51 `/W4 /WX /permissive-` probe also compiles and runs successfully.
+
+The `context_path_test` suite covers empty/key/index/root traversal, canonical
+escaping and malformed parser input, wildcard any/all traversal, sequential
+bindings, predicate and multiquery selection, signed/unsigned zero equality,
+presence of null fields, array/query removal, linked navigation/rendering,
+single and array diff forwarding, clone isolation and reference-cycle rejection.
+It passes directly under MinGW/GCC and in an isolated Visual Studio 2026 MSVC
+14.51 `/W4 /WX /permissive- /utf-8` build with `mctx.cpp`. The full CTest driver
+still encounters the known MinGW DLL-loader `0xc0000135` boundary on this
+machine; all seven binaries pass when executed directly with the MinGW runtime
+on `PATH`.

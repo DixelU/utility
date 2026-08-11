@@ -37,7 +37,8 @@ available in the scanned repositories are under `versions/licenses/`:
 | polyline interpolation | SAFC_v1, SAFC_v2, xSYS | Independently rewritten with explicit extrapolation, rounding and invalid-entry policies plus randomized reference tests. |
 | process memory/view | MemoryObserver | Archive only; deferred from the active consolidation with no root target planned for now. |
 | networking helpers | saf-lep, SAF-AVTTS | Packet routing was promoted; Base64 and URL helpers were rewritten and promoted; raw editions remain for comparison. |
-| `mctx` extensions/misc/UUID/timestamp | SAF-MTQ | Archive as MIT candidates; split large coupled headers before promotion. |
+| `ContextPath` and linked contexts | SAF-MTQ | Promoted as direct `mctx` utilities, split across traversal, serialization and linked-wrapper units; the raw pair remains archived. |
+| MetaSDK misc/UUID/timestamp | SAF-MTQ | Archive as MIT candidates; split coupled helpers before promotion. |
 | expression evaluator/logger | DeepMidi | Archive for rewrite; current editions have correctness/threading concerns. |
 | JSON candidates | operator-pp, SAF-AVTTS | Archive only; keep dependencies and license boundaries explicit. |
 

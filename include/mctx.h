@@ -622,14 +622,17 @@ bool mctx::is() const
 		if constexpr (std::is_signed_v<T>)
 			return std::holds_alternative<int64_t>(this->var) ||
 				std::holds_alternative<uint64_t>(this->var);
-		return std::holds_alternative<uint64_t>(this->var);
+		else
+			return std::holds_alternative<uint64_t>(this->var);
 	}
-
-	using U = details::possible_integral_alternative<T>;
-	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
-		return std::holds_alternative<U>(this->var);
-
-	return false;
+	else
+	{
+		using U = details::possible_integral_alternative<T>;
+		if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
+			return std::holds_alternative<U>(this->var);
+		else
+			return false;
+	}
 }
 
 template<typename T>
@@ -649,12 +652,14 @@ T mctx::get() const
 		}
 		return T();
 	}
-
-	using U = details::possible_integral_alternative<T>;
-	if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
-		return static_cast<T>(std::get<U>(this->var));
-
-	return T();
+	else
+	{
+		using U = details::possible_integral_alternative<T>;
+		if constexpr (details::is_in_variant_v<U, decltype(this->var)>)
+			return static_cast<T>(std::get<U>(this->var));
+		else
+			return T();
+	}
 }
 
 template<typename T>

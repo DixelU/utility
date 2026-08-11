@@ -21,6 +21,13 @@ set (src
 	src/mctx_json.cpp
 )
 
+set (context_path_src
+	src/context_path.cpp
+	src/context_path_traversal.cpp
+	src/context_path_serializer.cpp
+	src/linked_context_wrapper.cpp
+)
+
 add_executable(test_x
 	tests/test_x.cpp
 	${src}
@@ -50,6 +57,12 @@ add_executable(polyline_converter_test
 	tests/polyline_converter_test.cpp
 )
 
+add_executable(context_path_test
+	tests/context_path_test.cpp
+	${src}
+	${context_path_src}
+)
+
 if (HAVE_BOOST_MULTIPRECISION)
 	add_executable(numeric_utilities_test
 		tests/numeric_utilities_test.cpp
@@ -62,6 +75,7 @@ if (BUILD_TESTING)
 	add_test(NAME collected_utilities_test COMMAND collected_utilities_test)
 	add_test(NAME matrix_utilities_test COMMAND matrix_utilities_test)
 	add_test(NAME polyline_converter_test COMMAND polyline_converter_test)
+	add_test(NAME context_path_test COMMAND context_path_test)
 	if (HAVE_BOOST_MULTIPRECISION)
 		add_test(NAME numeric_utilities_test COMMAND numeric_utilities_test)
 	endif ()

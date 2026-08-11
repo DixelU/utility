@@ -59,3 +59,21 @@ extrapolation. Empty curves and invalid results use `std::optional`, while
 its rounding policy and rejects values outside the destination range.
 `polyline_lookup_table` stores optional entries; `materialize(fallback)` is the
 only operation that replaces invalid entries with a sentinel.
+
+`dixelu::ContextPath` operates directly on `dixelu::mctx`; no separate context
+adapter is required. Paths support object keys, checked array indices, root and
+previous composition, bindable `*` variables, predicates, equality/presence
+query sets, matching-all traversal and removal. `context_path_serializer.h`
+owns the canonical quoted syntax and `_ctxpath` literal. Bindings are runtime
+state and deliberately remain `*` when a path is serialized. Programmatic
+predicates are also runtime-only: their string form is diagnostic and is not
+accepted by the deserializer.
+
+The former monolithic SAF-MTQ pair is split by responsibility. Include
+`context_path.h` for traversal, `context_path_serializer.h` for text paths, or
+`linked_context_wrapper.h` for `$ref` projection and rendered-diff forwarding.
+`ContextPath.h` is a compatibility umbrella that also provides the archived
+global class names. Linked rendering rejects reference cycles and limits link
+depth; `$as_array` explicitly requests all matches rather than the first. This
+family retains the SAF-MTQ MIT license; its license text is preserved at
+`versions/licenses/MIT-SAF-MTQ-base.txt`.
