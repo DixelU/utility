@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <iterator>
 #include <new>
 #include <utility>
 
@@ -10,7 +11,9 @@ namespace dixelu
 
 // An unbounded single-producer/single-consumer queue with stable element
 // addresses. Producer-only operations: emplace(), push(), back().
-// Consumer-only operations: front(), pop(), empty(), clear(). Destruction and
+// Consumer-only operations: front(), pop(), empty(), begin(), end(), clear().
+// Iteration captures a read-only boundary and permits concurrent pushes, but
+// pop() and clear() must not run until that traversal finishes. Destruction and
 // clear() require both sides to be stopped.
 template<
 	typename T,
@@ -85,6 +88,10 @@ class buffered_queue_spsc
 	alignas(64) slab* tail_ = nullptr;
 	std::size_t pushed_local_ = 0;
 
+	// Published only on slab rollover, allowing O(1) snapshot capture without
+	// making the producer's per-element tail access atomic.
+	alignas(64) std::atomic<slab*> published_tail_{nullptr};
+
 	alignas(64) slab* head_ = nullptr;
 	std::size_t popped_local_ = 0;
 
@@ -144,6 +151,7 @@ class buffered_queue_spsc
 		if (!tail_)
 		{
 			tail_ = producer_get_slab();
+			published_tail_.store(tail_, std::memory_order_release);
 			head_ = tail_;
 		}
 	}
@@ -162,8 +170,118 @@ class buffered_queue_spsc
 	}
 
 public:
+	class consumer_iterator
+	{
+		slab* current_slab_ = nullptr;
+		slab* stop_slab_ = nullptr;
+		T* current_ = nullptr;
+		T* slab_end_ = nullptr;
+		T* stop_end_ = nullptr;
+
+		void finish() noexcept
+		{
+			current_slab_ = nullptr;
+			stop_slab_ = nullptr;
+			current_ = nullptr;
+			slab_end_ = nullptr;
+			stop_end_ = nullptr;
+		}
+
+		void advance_to_readable_position() noexcept
+		{
+			while (current_slab_ && current_ == slab_end_)
+			{
+				if (current_slab_ == stop_slab_)
+				{
+					finish();
+					return;
+				}
+
+				slab* next = current_slab_->next_slab.load(std::memory_order_acquire);
+				if (!next)
+				{
+					finish();
+					return;
+				}
+
+				current_slab_ = next;
+				current_ = next->begin;
+				slab_end_ = next == stop_slab_ ?
+					stop_end_ : next->end.load(std::memory_order_acquire);
+			}
+		}
+
+	public:
+		using iterator_concept = std::forward_iterator_tag;
+		using iterator_category = std::forward_iterator_tag;
+		using value_type = T;
+		using difference_type = std::ptrdiff_t;
+		using pointer = const T*;
+		using reference = const T&;
+
+		consumer_iterator() noexcept = default;
+
+		consumer_iterator(slab* first_slab, slab* stop_slab, T* stop_end) noexcept :
+			current_slab_(first_slab),
+			stop_slab_(stop_slab),
+			current_(first_slab ? first_slab->begin : nullptr),
+			slab_end_(first_slab == stop_slab ?
+				stop_end : first_slab->end.load(std::memory_order_acquire)),
+			stop_end_(stop_end)
+		{
+			advance_to_readable_position();
+		}
+
+		[[nodiscard]] reference operator*() const noexcept
+		{
+			return *current_;
+		}
+
+		[[nodiscard]] pointer operator->() const noexcept
+		{
+			return current_;
+		}
+
+		consumer_iterator& operator++() noexcept
+		{
+			++current_;
+			advance_to_readable_position();
+			return *this;
+		}
+
+		consumer_iterator operator++(int) noexcept
+		{
+			consumer_iterator previous = *this;
+			++(*this);
+			return previous;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			const consumer_iterator& iterator,
+			std::default_sentinel_t) noexcept
+		{
+			return iterator.current_slab_ == nullptr;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			std::default_sentinel_t sentinel,
+			const consumer_iterator& iterator) noexcept
+		{
+			return iterator == sentinel;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			const consumer_iterator& left,
+			const consumer_iterator& right) noexcept
+		{
+			return left.current_slab_ == right.current_slab_ &&
+				left.current_ == right.current_;
+		}
+	};
+
 	buffered_queue_spsc() :
 		tail_(new slab()),
+		published_tail_(tail_),
 		head_(tail_)
 	{}
 
@@ -211,6 +329,7 @@ public:
 			}
 			tail_->next_slab.store(next, std::memory_order_release);
 			tail_ = next;
+			published_tail_.store(next, std::memory_order_release);
 			pushed_.store(++pushed_local_, std::memory_order_relaxed);
 			return *result;
 		}
@@ -286,6 +405,7 @@ public:
 			{
 				head_->reset_for_reuse();
 				tail_ = head_;
+				published_tail_.store(head_, std::memory_order_relaxed);
 				break;
 			}
 		}
@@ -301,6 +421,24 @@ public:
 		const std::size_t pushed = pushed_.load(std::memory_order_relaxed);
 		const std::size_t popped = popped_.load(std::memory_order_relaxed);
 		return pushed > popped ? pushed - popped : 0;
+	}
+
+	// Captures the currently published queue boundary. Elements pushed after
+	// this call are deliberately deferred until the next traversal.
+	[[nodiscard]] consumer_iterator begin() noexcept
+	{
+		advance_consumer_head();
+		if (!head_ || head_->empty_consumer())
+			return {};
+
+		slab* stop_slab = published_tail_.load(std::memory_order_acquire);
+		T* stop_end = stop_slab->end.load(std::memory_order_acquire);
+		return consumer_iterator(head_, stop_slab, stop_end);
+	}
+
+	[[nodiscard]] std::default_sentinel_t end() const noexcept
+	{
+		return {};
 	}
 };
 

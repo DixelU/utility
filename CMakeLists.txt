@@ -49,6 +49,14 @@ add_executable(collected_utilities_test
 )
 target_link_libraries(collected_utilities_test PRIVATE Threads::Threads)
 
+add_executable(buffered_queue_spsc_test
+	tests/buffered_queue_spsc_test.cpp
+)
+target_link_libraries(buffered_queue_spsc_test PRIVATE Threads::Threads)
+target_compile_options(buffered_queue_spsc_test PRIVATE
+	$<$<CXX_COMPILER_ID:MSVC>:/EHsc>
+)
+
 add_executable(matrix_utilities_test
 	tests/matrix_utilities_test.cpp
 )
@@ -73,6 +81,7 @@ if (BUILD_TESTING)
 	add_test(NAME mctx_test COMMAND mctx_test)
 	add_test(NAME mctx_raw_stress_test COMMAND mctx_raw_stress_test)
 	add_test(NAME collected_utilities_test COMMAND collected_utilities_test)
+	add_test(NAME buffered_queue_spsc_test COMMAND buffered_queue_spsc_test)
 	add_test(NAME matrix_utilities_test COMMAND matrix_utilities_test)
 	add_test(NAME polyline_converter_test COMMAND polyline_converter_test)
 	add_test(NAME context_path_test COMMAND context_path_test)
