@@ -6,6 +6,17 @@
 #include <new>
 #include <utility>
 
+#if defined(_MSC_VER)
+#define DIXELU_SPSC_FORCE_INLINE __forceinline
+#define DIXELU_SPSC_NO_INLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DIXELU_SPSC_FORCE_INLINE inline __attribute__((always_inline))
+#define DIXELU_SPSC_NO_INLINE __attribute__((noinline))
+#else
+#define DIXELU_SPSC_FORCE_INLINE inline
+#define DIXELU_SPSC_NO_INLINE
+#endif
+
 namespace dixelu
 {
 
@@ -51,13 +62,13 @@ class buffered_queue_spsc
 			return begin == end.load(std::memory_order_acquire);
 		}
 
-		[[nodiscard]] bool full_producer() noexcept
+		[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool full_producer() noexcept
 		{
 			return end.load(std::memory_order_relaxed) == capacity_end();
 		}
 
 		template<typename... Args>
-		T& emplace_producer(Args&&... args)
+		DIXELU_SPSC_FORCE_INLINE T& emplace_producer(Args&&... args)
 		{
 			T* current_end = end.load(std::memory_order_relaxed);
 			::new (current_end) T(std::forward<Args>(args)...);
@@ -91,9 +102,13 @@ class buffered_queue_spsc
 	// Published only on slab rollover, allowing O(1) snapshot capture without
 	// making the producer's per-element tail access atomic.
 	alignas(64) std::atomic<slab*> published_tail_{nullptr};
+	// First slab publication keeps lazy allocation race-free: the producer
+	// writes this once and the consumer adopts it into its private head_.
+	alignas(64) std::atomic<slab*> published_head_{nullptr};
 
 	alignas(64) slab* head_ = nullptr;
 	std::size_t popped_local_ = 0;
+	bool front_ready_ = false;
 
 	alignas(64) std::atomic<slab*> recycle_head_{nullptr};
 	alignas(64) std::atomic<std::size_t> recycle_count_{0};
@@ -146,27 +161,69 @@ class buffered_queue_spsc
 		recycle_count_.fetch_add(1, std::memory_order_relaxed);
 	}
 
-	void ensure_initialized_producer()
+	DIXELU_SPSC_FORCE_INLINE void ensure_initialized_producer()
 	{
 		if (!tail_)
 		{
 			tail_ = producer_get_slab();
 			published_tail_.store(tail_, std::memory_order_release);
-			head_ = tail_;
+			published_head_.store(tail_, std::memory_order_release);
 		}
 	}
 
-	void advance_consumer_head() noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE slab* consumer_head() noexcept
 	{
-		while (head_ && head_->empty_consumer())
+		slab* current = head_;
+		if (!current)
 		{
-			slab* next = head_->next_slab.load(std::memory_order_acquire);
-			if (!next)
-				break;
-			slab* old = head_;
-			head_ = next;
-			consumer_recycle_slab(old);
+			current = published_head_.load(std::memory_order_acquire);
+			head_ = current;
 		}
+		return current;
+	}
+
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool prepare_consumer_front() noexcept
+	{
+		if (front_ready_)
+			return true;
+
+		slab* current = consumer_head();
+		while (current)
+		{
+			if (!current->empty_consumer())
+			{
+				front_ready_ = true;
+				return true;
+			}
+
+			slab* next = current->next_slab.load(std::memory_order_acquire);
+			if (!next)
+				return false;
+			consumer_recycle_slab(current);
+			current = next;
+			head_ = current;
+		}
+		return false;
+	}
+
+	template<typename... Args>
+	DIXELU_SPSC_NO_INLINE T& emplace_in_new_slab(Args&&... args)
+	{
+		slab* next = producer_get_slab();
+		T* result;
+		try
+		{
+			result = &next->emplace_producer(std::forward<Args>(args)...);
+		}
+		catch (...)
+		{
+			delete next;
+			throw;
+		}
+		tail_->next_slab.store(next, std::memory_order_release);
+		tail_ = next;
+		published_tail_.store(next, std::memory_order_release);
+		return *result;
 	}
 
 public:
@@ -279,14 +336,11 @@ public:
 		}
 	};
 
-	buffered_queue_spsc() :
-		tail_(new slab()),
-		published_tail_(tail_),
-		head_(tail_)
-	{}
+	buffered_queue_spsc() = default;
 
 	~buffered_queue_spsc()
 	{
+		static_cast<void>(consumer_head());
 		while (head_)
 		{
 			slab* next = head_->next_slab.load(std::memory_order_relaxed);
@@ -310,41 +364,23 @@ public:
 	buffered_queue_spsc& operator=(buffered_queue_spsc&&) = delete;
 
 	template<typename... Args>
-	T& emplace(Args&&... args)
+	DIXELU_SPSC_FORCE_INLINE T& emplace(Args&&... args)
 	{
 		ensure_initialized_producer();
 
-		if (tail_->full_producer())
-		{
-			slab* next = producer_get_slab();
-			T* result;
-			try
-			{
-				result = &next->emplace_producer(std::forward<Args>(args)...);
-			}
-			catch (...)
-			{
-				delete next;
-				throw;
-			}
-			tail_->next_slab.store(next, std::memory_order_release);
-			tail_ = next;
-			published_tail_.store(next, std::memory_order_release);
-			pushed_.store(++pushed_local_, std::memory_order_relaxed);
-			return *result;
-		}
-
-		T& result = tail_->emplace_producer(std::forward<Args>(args)...);
+		T* result = tail_->full_producer() ?
+			&emplace_in_new_slab(std::forward<Args>(args)...) :
+			&tail_->emplace_producer(std::forward<Args>(args)...);
 		pushed_.store(++pushed_local_, std::memory_order_relaxed);
-		return result;
+		return *result;
 	}
 
-	void push(const T& value)
+	DIXELU_SPSC_FORCE_INLINE void push(const T& value)
 	{
 		emplace(value);
 	}
 
-	void push(T&& value)
+	DIXELU_SPSC_FORCE_INLINE void push(T&& value)
 	{
 		emplace(std::move(value));
 	}
@@ -359,29 +395,25 @@ public:
 		return const_cast<buffered_queue_spsc*>(this)->back();
 	}
 
-	void pop() noexcept
+	DIXELU_SPSC_FORCE_INLINE void pop() noexcept
 	{
-		advance_consumer_head();
-		if (!head_ || head_->empty_consumer())
+		if (!prepare_consumer_front())
 			return;
 
+		front_ready_ = false;
 		head_->pop_consumer();
 		popped_.store(++popped_local_, std::memory_order_relaxed);
-		advance_consumer_head();
+		static_cast<void>(prepare_consumer_front());
 	}
 
-	[[nodiscard]] bool empty() const noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool empty() const noexcept
 	{
-		if (!head_)
-			return true;
-		if (!head_->empty_consumer())
-			return false;
-		return head_->next_slab.load(std::memory_order_acquire) == nullptr;
+		return !const_cast<buffered_queue_spsc*>(this)->prepare_consumer_front();
 	}
 
-	[[nodiscard]] T& front() noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE T& front() noexcept
 	{
-		advance_consumer_head();
+		static_cast<void>(prepare_consumer_front());
 		return *head_->begin;
 	}
 
@@ -392,6 +424,8 @@ public:
 
 	void clear() noexcept
 	{
+		front_ready_ = false;
+		static_cast<void>(consumer_head());
 		while (head_)
 		{
 			head_->clear_consumer();
@@ -406,6 +440,7 @@ public:
 				head_->reset_for_reuse();
 				tail_ = head_;
 				published_tail_.store(head_, std::memory_order_relaxed);
+				published_head_.store(head_, std::memory_order_relaxed);
 				break;
 			}
 		}
@@ -427,8 +462,7 @@ public:
 	// this call are deliberately deferred until the next traversal.
 	[[nodiscard]] consumer_iterator begin() noexcept
 	{
-		advance_consumer_head();
-		if (!head_ || head_->empty_consumer())
+		if (!prepare_consumer_front())
 			return {};
 
 		slab* stop_slab = published_tail_.load(std::memory_order_acquire);
@@ -443,3 +477,6 @@ public:
 };
 
 } // namespace dixelu
+
+#undef DIXELU_SPSC_FORCE_INLINE
+#undef DIXELU_SPSC_NO_INLINE

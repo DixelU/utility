@@ -45,6 +45,87 @@ void test_fifo()
 	require(queue.approximate_size() == 0, "drained SPSC queue must report zero size");
 }
 
+void test_empty_pop_and_clear_reuse()
+{
+	dixelu::buffered_queue_spsc<int, 2, 1> queue;
+	require(queue.empty(), "a default-constructed SPSC queue must be empty");
+	queue.pop();
+	require(queue.empty(), "popping an uninitialized SPSC queue must be harmless");
+
+	queue.emplace(1);
+	queue.emplace(2);
+	queue.emplace(3);
+	require(queue.front() == 1, "front must expose the first queued value");
+	queue.clear();
+	require(queue.empty(), "clear must reset consumer readiness");
+	require(queue.approximate_size() == 0, "clear must reset the approximate size");
+
+	queue.emplace(4);
+	require(queue.front() == 4, "a cleared SPSC queue must be reusable");
+	queue.pop();
+	require(queue.empty(), "a reused SPSC queue must drain normally");
+}
+
+struct lifetime_probe
+{
+	inline static std::atomic_int alive = 0;
+
+	explicit lifetime_probe(int)
+	{
+		alive.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	~lifetime_probe()
+	{
+		alive.fetch_sub(1, std::memory_order_relaxed);
+	}
+};
+
+void test_producer_only_destruction()
+{
+	{
+		dixelu::buffered_queue_spsc<lifetime_probe, 2, 1> queue;
+		queue.emplace(1);
+		queue.emplace(2);
+		queue.emplace(3);
+		require(lifetime_probe::alive.load(std::memory_order_relaxed) == 3,
+			"every producer-only element must be alive before queue destruction");
+	}
+	require(lifetime_probe::alive.load(std::memory_order_relaxed) == 0,
+		"queue destruction must release elements before consumer adoption");
+}
+
+struct throwing_value
+{
+	int value;
+
+	explicit throwing_value(int new_value) : value(new_value)
+	{
+		if (new_value < 0)
+			throw std::runtime_error("requested construction failure");
+	}
+};
+
+void test_rollover_exception_safety()
+{
+	dixelu::buffered_queue_spsc<throwing_value, 1, 1> queue;
+	queue.emplace(1);
+	try
+	{
+		queue.emplace(-1);
+		require(false, "rollover construction must propagate exceptions");
+	}
+	catch (const std::runtime_error&)
+	{}
+
+	require(queue.front().value == 1,
+		"failed rollover construction must preserve the existing queue");
+	queue.pop();
+	queue.emplace(2);
+	require(queue.front().value == 2,
+		"queue must remain usable after failed rollover construction");
+}
+
 void test_snapshot_iteration()
 {
 	using queue_type = dixelu::buffered_queue_spsc<std::size_t, 3, 1>;
@@ -132,6 +213,9 @@ void test_snapshot_with_concurrent_producer()
 int main()
 {
 	test_fifo();
+	test_empty_pop_and_clear_reuse();
+	test_producer_only_destruction();
+	test_rollover_exception_safety();
 	test_snapshot_iteration();
 	test_snapshot_with_concurrent_producer();
 }
