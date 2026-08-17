@@ -60,20 +60,25 @@ its rounding policy and rejects values outside the destination range.
 `polyline_lookup_table` stores optional entries; `materialize(fallback)` is the
 only operation that replaces invalid entries with a sentinel.
 
-`dixelu::ContextPath` operates directly on `dixelu::mctx`; no separate context
-adapter is required. Paths support object keys, checked array indices, root and
-previous composition, bindable `*` variables, predicates, equality/presence
-query sets, matching-all traversal and removal. `context_path_serializer.h`
-owns the canonical quoted syntax and `_ctxpath` literal. Bindings are runtime
-state and deliberately remain `*` when a path is serialized. Programmatic
-predicates are also runtime-only: their string form is diagnostic and is not
-accepted by the deserializer.
+`dixelu::mctx_path` is a value-type selector for a `dixelu::mctx` tree; it does
+not require a separate borrowed “context” abstraction. A path may contain keys,
+checked array indices, root/previous composition, bindable `*` variables, and
+selectors. Selectors either use a predicate or require every equality/presence
+query clause to match a child. A query’s relative path may match several
+descendants; equality succeeds when at least one has the requested scalar
+value. `get_all_matching()` retains all selector results, while ordinary path
+lookup chooses the first.
+
+`mctx_path_serializer.h` owns the canonical quoted text form and `_mctx_path`
+literal. It accepts legacy unquoted keys where unambiguous, then serializes
+them canonically with quotes. Bindings are runtime state and deliberately
+remain `*` when serialized. Programmatic predicates are also runtime-only:
+their string form is diagnostic and is not accepted by the deserializer.
 
 The former monolithic SAF-MTQ pair is split by responsibility. Include
-`context_path.h` for traversal, `context_path_serializer.h` for text paths, or
-`linked_context_wrapper.h` for `$ref` projection and rendered-diff forwarding.
-`ContextPath.h` is a compatibility umbrella that also provides the archived
-global class names. Linked rendering rejects reference cycles and limits link
-depth; `$as_array` explicitly requests all matches rather than the first. This
-family retains the SAF-MTQ MIT license; its license text is preserved at
+`mctx_path.h` for traversal, `mctx_path_serializer.h` for text paths, or
+`linked_mctx_wrapper.h` for `$ref` projection and rendered-diff forwarding.
+Linked rendering rejects reference cycles and limits link depth; `$as_array`
+explicitly requests all matches rather than the first. This family retains the
+SAF-MTQ MIT license; its license text is preserved at
 `versions/licenses/MIT-SAF-MTQ-base.txt`.
