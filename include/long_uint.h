@@ -34,18 +34,8 @@ struct wide_product
 	std::uint64_t high;
 };
 
-constexpr wide_product multiply_wide(std::uint64_t lhs, std::uint64_t rhs) noexcept
+constexpr wide_product multiply_wide_impl(std::uint64_t lhs, std::uint64_t rhs) noexcept
 {
-#if defined(__SIZEOF_INT128__) && !defined(__wasm__)
-	const __uint128_t product = static_cast<__uint128_t>(lhs) * static_cast<__uint128_t>(rhs);
-	return {
-		static_cast<std::uint64_t>(product),
-		static_cast<std::uint64_t>(product >> 64)};
-#elif defined(_MSC_VER) && defined(_M_X64)
-	std::uint64_t high = 0;
-	const std::uint64_t low = _umul128(lhs, rhs, &high);
-	return {low, high};
-#else
 	const std::uint64_t lhs_low = static_cast<std::uint32_t>(lhs);
 	const std::uint64_t lhs_high = lhs >> 32;
 	const std::uint64_t rhs_low = static_cast<std::uint32_t>(rhs);
@@ -59,7 +49,27 @@ constexpr wide_product multiply_wide(std::uint64_t lhs, std::uint64_t rhs) noexc
 
 	return {
 		(second_cross << 32) | static_cast<std::uint32_t>(low_product),
-		lhs_high * rhs_high + first_cross_high + (second_cross >> 32)};
+		lhs_high * rhs_high + first_cross_high + (second_cross >> 32) };
+}
+
+constexpr wide_product multiply_wide(std::uint64_t lhs, std::uint64_t rhs) noexcept
+{
+	if consteval 
+	{
+		return multiply_wide_impl(lhs, rhs);
+	}
+
+#if defined(__SIZEOF_INT128__) && !defined(__wasm__)
+	const __uint128_t product = static_cast<__uint128_t>(lhs) * static_cast<__uint128_t>(rhs);
+	return {
+		static_cast<std::uint64_t>(product),
+		static_cast<std::uint64_t>(product >> 64)};
+#elif defined(_MSC_VER) && defined(_M_X64)
+	std::uint64_t high = 0;
+	const std::uint64_t low = _umul128(lhs, rhs, &high);
+	return {low, high};
+#else
+	return multiply_wide_impl(lhs, rhs);
 #endif
 }
 
