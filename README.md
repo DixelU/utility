@@ -31,6 +31,18 @@ finishes every accepted task; `shutdown(cancel)` discards pending work and sends
 a cooperative `std::stop_token` to the active task. Submissions return an
 explicit accepted/empty/stopped result, and destruction drains by default.
 
+`dixelu::buffered_block_list<T>` is a single-threaded, stable-address
+bidirectional list backed by `buffered_object_pool`. It groups values into
+256-slot blocks with separate value, previous-offset, and next-offset arrays.
+This avoids per-value link padding while replacing element pointers with
+one-byte intra-block offsets. `push_front`, `push_back`, iterator `erase`, and
+`size` are O(1).
+`try_insert(position, value)` returns `std::optional<iterator>` and refuses a
+middle insertion when the surrounding existing block or blocks have no suitable
+physical gap; it does not allocate a new middle block. Erased interior slots
+stay with their block until reused by a compatible insertion or until the block
+becomes empty.
+
 `dixelu::long_uint<Degree>` provides fixed-width unsigned modular arithmetic;
 degree zero is 128-bit and each following degree doubles the width. Division by
 zero throws, shifts at least as large as the width return zero, and checked
