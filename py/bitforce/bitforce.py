@@ -64,7 +64,7 @@ print("Assumes legacy P2PKH addresses (mainnet).")
 
 missing_bits = 20
 compressed = False
-target_address = "00f8753559cd673046044baf06725c7a94bcb8a592f9729077"
+target_address = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" # "1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW"
 # input("Enter target address if known (optional – enables early stop): ").strip() or None
 
 base_int =    random_256int()
