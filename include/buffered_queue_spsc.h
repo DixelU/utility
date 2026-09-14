@@ -2,15 +2,29 @@
 
 #include <atomic>
 #include <cstddef>
+#include <iterator>
 #include <new>
 #include <utility>
+
+#if defined(_MSC_VER)
+#define DIXELU_SPSC_FORCE_INLINE __forceinline
+#define DIXELU_SPSC_NO_INLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define DIXELU_SPSC_FORCE_INLINE inline __attribute__((always_inline))
+#define DIXELU_SPSC_NO_INLINE __attribute__((noinline))
+#else
+#define DIXELU_SPSC_FORCE_INLINE inline
+#define DIXELU_SPSC_NO_INLINE
+#endif
 
 namespace dixelu
 {
 
 // An unbounded single-producer/single-consumer queue with stable element
 // addresses. Producer-only operations: emplace(), push(), back().
-// Consumer-only operations: front(), pop(), empty(), clear(). Destruction and
+// Consumer-only operations: front(), pop(), empty(), begin(), end(), clear().
+// Iteration captures a read-only boundary and permits concurrent pushes, but
+// pop() and clear() must not run until that traversal finishes. Destruction and
 // clear() require both sides to be stopped.
 template<
 	typename T,
@@ -48,13 +62,13 @@ class buffered_queue_spsc
 			return begin == end.load(std::memory_order_acquire);
 		}
 
-		[[nodiscard]] bool full_producer() noexcept
+		[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool full_producer() noexcept
 		{
 			return end.load(std::memory_order_relaxed) == capacity_end();
 		}
 
 		template<typename... Args>
-		T& emplace_producer(Args&&... args)
+		DIXELU_SPSC_FORCE_INLINE T& emplace_producer(Args&&... args)
 		{
 			T* current_end = end.load(std::memory_order_relaxed);
 			::new (current_end) T(std::forward<Args>(args)...);
@@ -85,8 +99,16 @@ class buffered_queue_spsc
 	alignas(64) slab* tail_ = nullptr;
 	std::size_t pushed_local_ = 0;
 
+	// Published only on slab rollover, allowing O(1) snapshot capture without
+	// making the producer's per-element tail access atomic.
+	alignas(64) std::atomic<slab*> published_tail_{nullptr};
+	// First slab publication keeps lazy allocation race-free: the producer
+	// writes this once and the consumer adopts it into its private head_.
+	alignas(64) std::atomic<slab*> published_head_{nullptr};
+
 	alignas(64) slab* head_ = nullptr;
 	std::size_t popped_local_ = 0;
+	bool front_ready_ = false;
 
 	alignas(64) std::atomic<slab*> recycle_head_{nullptr};
 	alignas(64) std::atomic<std::size_t> recycle_count_{0};
@@ -139,36 +161,186 @@ class buffered_queue_spsc
 		recycle_count_.fetch_add(1, std::memory_order_relaxed);
 	}
 
-	void ensure_initialized_producer()
+	DIXELU_SPSC_FORCE_INLINE void ensure_initialized_producer()
 	{
 		if (!tail_)
 		{
 			tail_ = producer_get_slab();
-			head_ = tail_;
+			published_tail_.store(tail_, std::memory_order_release);
+			published_head_.store(tail_, std::memory_order_release);
 		}
 	}
 
-	void advance_consumer_head() noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE slab* consumer_head() noexcept
 	{
-		while (head_ && head_->empty_consumer())
+		slab* current = head_;
+		if (!current)
 		{
-			slab* next = head_->next_slab.load(std::memory_order_acquire);
-			if (!next)
-				break;
-			slab* old = head_;
-			head_ = next;
-			consumer_recycle_slab(old);
+			current = published_head_.load(std::memory_order_acquire);
+			head_ = current;
 		}
+		return current;
+	}
+
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool prepare_consumer_front() noexcept
+	{
+		if (front_ready_)
+			return true;
+
+		slab* current = consumer_head();
+		while (current)
+		{
+			if (!current->empty_consumer())
+			{
+				front_ready_ = true;
+				return true;
+			}
+
+			slab* next = current->next_slab.load(std::memory_order_acquire);
+			if (!next)
+				return false;
+			consumer_recycle_slab(current);
+			current = next;
+			head_ = current;
+		}
+		return false;
+	}
+
+	template<typename... Args>
+	DIXELU_SPSC_NO_INLINE T& emplace_in_new_slab(Args&&... args)
+	{
+		slab* next = producer_get_slab();
+		T* result;
+		try
+		{
+			result = &next->emplace_producer(std::forward<Args>(args)...);
+		}
+		catch (...)
+		{
+			delete next;
+			throw;
+		}
+		tail_->next_slab.store(next, std::memory_order_release);
+		tail_ = next;
+		published_tail_.store(next, std::memory_order_release);
+		return *result;
 	}
 
 public:
-	buffered_queue_spsc() :
-		tail_(new slab()),
-		head_(tail_)
-	{}
+	class consumer_iterator
+	{
+		slab* current_slab_ = nullptr;
+		slab* stop_slab_ = nullptr;
+		T* current_ = nullptr;
+		T* slab_end_ = nullptr;
+		T* stop_end_ = nullptr;
+
+		void finish() noexcept
+		{
+			current_slab_ = nullptr;
+			stop_slab_ = nullptr;
+			current_ = nullptr;
+			slab_end_ = nullptr;
+			stop_end_ = nullptr;
+		}
+
+		void advance_to_readable_position() noexcept
+		{
+			while (current_slab_ && current_ == slab_end_)
+			{
+				if (current_slab_ == stop_slab_)
+				{
+					finish();
+					return;
+				}
+
+				slab* next = current_slab_->next_slab.load(std::memory_order_acquire);
+				if (!next)
+				{
+					finish();
+					return;
+				}
+
+				current_slab_ = next;
+				current_ = next->begin;
+				slab_end_ = next == stop_slab_ ?
+					stop_end_ : next->end.load(std::memory_order_acquire);
+			}
+		}
+
+	public:
+		using iterator_concept = std::forward_iterator_tag;
+		using iterator_category = std::forward_iterator_tag;
+		using value_type = T;
+		using difference_type = std::ptrdiff_t;
+		using pointer = const T*;
+		using reference = const T&;
+
+		consumer_iterator() noexcept = default;
+
+		consumer_iterator(slab* first_slab, slab* stop_slab, T* stop_end) noexcept :
+			current_slab_(first_slab),
+			stop_slab_(stop_slab),
+			current_(first_slab ? first_slab->begin : nullptr),
+			slab_end_(first_slab == stop_slab ?
+				stop_end : first_slab->end.load(std::memory_order_acquire)),
+			stop_end_(stop_end)
+		{
+			advance_to_readable_position();
+		}
+
+		[[nodiscard]] reference operator*() const noexcept
+		{
+			return *current_;
+		}
+
+		[[nodiscard]] pointer operator->() const noexcept
+		{
+			return current_;
+		}
+
+		consumer_iterator& operator++() noexcept
+		{
+			++current_;
+			advance_to_readable_position();
+			return *this;
+		}
+
+		consumer_iterator operator++(int) noexcept
+		{
+			consumer_iterator previous = *this;
+			++(*this);
+			return previous;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			const consumer_iterator& iterator,
+			std::default_sentinel_t) noexcept
+		{
+			return iterator.current_slab_ == nullptr;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			std::default_sentinel_t sentinel,
+			const consumer_iterator& iterator) noexcept
+		{
+			return iterator == sentinel;
+		}
+
+		[[nodiscard]] friend bool operator==(
+			const consumer_iterator& left,
+			const consumer_iterator& right) noexcept
+		{
+			return left.current_slab_ == right.current_slab_ &&
+				left.current_ == right.current_;
+		}
+	};
+
+	buffered_queue_spsc() = default;
 
 	~buffered_queue_spsc()
 	{
+		static_cast<void>(consumer_head());
 		while (head_)
 		{
 			slab* next = head_->next_slab.load(std::memory_order_relaxed);
@@ -192,40 +364,23 @@ public:
 	buffered_queue_spsc& operator=(buffered_queue_spsc&&) = delete;
 
 	template<typename... Args>
-	T& emplace(Args&&... args)
+	DIXELU_SPSC_FORCE_INLINE T& emplace(Args&&... args)
 	{
 		ensure_initialized_producer();
 
-		if (tail_->full_producer())
-		{
-			slab* next = producer_get_slab();
-			T* result;
-			try
-			{
-				result = &next->emplace_producer(std::forward<Args>(args)...);
-			}
-			catch (...)
-			{
-				delete next;
-				throw;
-			}
-			tail_->next_slab.store(next, std::memory_order_release);
-			tail_ = next;
-			pushed_.store(++pushed_local_, std::memory_order_relaxed);
-			return *result;
-		}
-
-		T& result = tail_->emplace_producer(std::forward<Args>(args)...);
+		T* result = tail_->full_producer() ?
+			&emplace_in_new_slab(std::forward<Args>(args)...) :
+			&tail_->emplace_producer(std::forward<Args>(args)...);
 		pushed_.store(++pushed_local_, std::memory_order_relaxed);
-		return result;
+		return *result;
 	}
 
-	void push(const T& value)
+	DIXELU_SPSC_FORCE_INLINE void push(const T& value)
 	{
 		emplace(value);
 	}
 
-	void push(T&& value)
+	DIXELU_SPSC_FORCE_INLINE void push(T&& value)
 	{
 		emplace(std::move(value));
 	}
@@ -240,29 +395,25 @@ public:
 		return const_cast<buffered_queue_spsc*>(this)->back();
 	}
 
-	void pop() noexcept
+	DIXELU_SPSC_FORCE_INLINE void pop() noexcept
 	{
-		advance_consumer_head();
-		if (!head_ || head_->empty_consumer())
+		if (!prepare_consumer_front())
 			return;
 
+		front_ready_ = false;
 		head_->pop_consumer();
 		popped_.store(++popped_local_, std::memory_order_relaxed);
-		advance_consumer_head();
+		static_cast<void>(prepare_consumer_front());
 	}
 
-	[[nodiscard]] bool empty() const noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE bool empty() const noexcept
 	{
-		if (!head_)
-			return true;
-		if (!head_->empty_consumer())
-			return false;
-		return head_->next_slab.load(std::memory_order_acquire) == nullptr;
+		return !const_cast<buffered_queue_spsc*>(this)->prepare_consumer_front();
 	}
 
-	[[nodiscard]] T& front() noexcept
+	[[nodiscard]] DIXELU_SPSC_FORCE_INLINE T& front() noexcept
 	{
-		advance_consumer_head();
+		static_cast<void>(prepare_consumer_front());
 		return *head_->begin;
 	}
 
@@ -273,6 +424,8 @@ public:
 
 	void clear() noexcept
 	{
+		front_ready_ = false;
+		static_cast<void>(consumer_head());
 		while (head_)
 		{
 			head_->clear_consumer();
@@ -286,6 +439,8 @@ public:
 			{
 				head_->reset_for_reuse();
 				tail_ = head_;
+				published_tail_.store(head_, std::memory_order_relaxed);
+				published_head_.store(head_, std::memory_order_relaxed);
 				break;
 			}
 		}
@@ -302,6 +457,26 @@ public:
 		const std::size_t popped = popped_.load(std::memory_order_relaxed);
 		return pushed > popped ? pushed - popped : 0;
 	}
+
+	// Captures the currently published queue boundary. Elements pushed after
+	// this call are deliberately deferred until the next traversal.
+	[[nodiscard]] consumer_iterator begin() noexcept
+	{
+		if (!prepare_consumer_front())
+			return {};
+
+		slab* stop_slab = published_tail_.load(std::memory_order_acquire);
+		T* stop_end = stop_slab->end.load(std::memory_order_acquire);
+		return consumer_iterator(head_, stop_slab, stop_end);
+	}
+
+	[[nodiscard]] std::default_sentinel_t end() const noexcept
+	{
+		return {};
+	}
 };
 
 } // namespace dixelu
+
+#undef DIXELU_SPSC_FORCE_INLINE
+#undef DIXELU_SPSC_NO_INLINE

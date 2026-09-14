@@ -1,6 +1,6 @@
 # C++ utility consolidation report
 
-Initial scan: 2026-08-07. Last updated: 2026-08-11.
+Initial scan: 2026-08-07. Last updated: 2026-09-04.
 
 Scope: top-level repositories under `C:\Users\User\git` plus the named
 `SAF*`, `WorldWars`, `MemoryObserver`, and `DeepMidiDiagnostics` repositories
@@ -16,6 +16,13 @@ trees were excluded.
 - `include/buffered_object_pool.h`: promoted the reusable stable-address pool,
   documented the single-threaded/live-object contract, added null-safe destroy,
   move deletion, public statistics and a compatibility alias.
+- `include/buffered_block_list.h`: added a single-threaded bidirectional list
+  backed by the object pool. Each control block holds 256 stable-address values
+  in a structure-of-arrays layout with separate previous/next byte-offset
+  tables. Zero-sentinel circular offsets link live slots. End insertion,
+  iterator erasure, and exact size checks are constant-time; `try_insert`
+  reuses a suitable physical gap without allocating a middle block and reports
+  refusal with `std::nullopt`.
 - `include/function_ref.h`: independently implemented a two-word, non-owning
   callable view without function-pointer-to-`void*` conversion and with
   temporary-functor rejection.
@@ -155,6 +162,13 @@ queries across reject, clamp and linear extrapolation, plus exact-point,
 single/empty-curve, duplicate-key, unsigned intermediate, rounding, narrowing
 and byte/MIDI lookup-table boundaries. Its isolated Visual Studio 2026 MSVC
 14.51 `/W4 /WX /permissive-` probe also compiles and runs successfully.
+
+The `buffered_block_list` regression covers block rollover, mixed front/back
+growth, bidirectional traversal, stable addresses, in-block and cross-block gap
+reuse, move-only values, construction failure, destruction, and 12,000
+deterministic mixed operations against a vector model. It passes with strict
+GCC/MinGW warnings and in an isolated Visual Studio 2026 MSVC 14.51
+`/W4 /WX /permissive- /utf-8` build.
 
 The `context_path_test` suite covers empty/key/index/root traversal, canonical
 escaping and malformed parser input, wildcard any/all traversal, sequential

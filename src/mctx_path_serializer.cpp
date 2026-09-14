@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2024 Alexander Verevkin
-#include "context_path_serializer.h"
+#include "mctx_path_serializer.h"
 
 #include <algorithm>
 #include <charconv>
@@ -16,12 +16,12 @@ namespace dixelu
 namespace
 {
 
-class PathParser
+class path_parser
 {
 public:
-	explicit PathParser(std::string_view text): _text(text) {}
+	explicit path_parser(std::string_view text): _text(text) {}
 
-	[[nodiscard]] ContextPath parse()
+	[[nodiscard]] mctx_path parse()
 	{
 		if(_text.empty())
 			return {};
@@ -38,7 +38,7 @@ private:
 	[[noreturn]] void fail(const char* message) const
 	{
 		throw std::invalid_argument(
-			"ContextPath parse error at byte " + std::to_string(_position) + ": " + message);
+			"mctx_path parse error at byte " + std::to_string(_position) + ": " + message);
 	}
 
 	[[nodiscard]] bool starts_with(std::string_view value) const noexcept
@@ -67,12 +67,12 @@ private:
 		return value != '\0' && stops.find(value) != std::string_view::npos;
 	}
 
-	[[nodiscard]] ContextPath parse_path(std::string_view stops, std::size_t depth)
+	[[nodiscard]] mctx_path parse_path(std::string_view stops, std::size_t depth)
 	{
 		if(depth > 16)
 			fail("query nesting is too deep");
 
-		ContextPath result;
+		mctx_path result;
 		bool parsed_segment = false;
 		for(;;)
 		{
@@ -92,27 +92,27 @@ private:
 		return result;
 	}
 
-	[[nodiscard]] ContextPath parse_segment(std::size_t depth)
+	[[nodiscard]] mctx_path parse_segment(std::size_t depth)
 	{
 		if(consume('#'))
-			return ContextPath(ContextPath::root);
+			return mctx_path(mctx_path::root);
 		if(consume(".."))
-			return ContextPath(ContextPath::previous);
+			return mctx_path(mctx_path::previous);
 		if(consume('*'))
 		{
 			if(consume(":{"))
 				return parse_filter(depth + 1);
-			return ContextPath(ContextPath::variable);
+			return mctx_path(mctx_path::variable);
 		}
 		if(peek() == '"')
-			return ContextPath(parse_quoted_string());
+			return mctx_path(parse_quoted_string());
 		if(peek() == '-' && _position + 1 < _text.size() &&
 			std::isdigit(static_cast<unsigned char>(_text[_position + 1])) != 0)
 		{
 			fail("array indices cannot be negative");
 		}
 		if(std::isdigit(static_cast<unsigned char>(peek())) != 0)
-			return ContextPath(parse_index());
+			return mctx_path(parse_index());
 
 		const auto begin = _position;
 		while(!at_end())
@@ -137,12 +137,12 @@ private:
 		value.erase(0, first);
 		if(value.empty())
 			fail("unquoted key is empty");
-		return ContextPath(std::move(value));
+		return mctx_path(std::move(value));
 	}
 
-	[[nodiscard]] ContextPath parse_filter(std::size_t depth)
+	[[nodiscard]] mctx_path parse_filter(std::size_t depth)
 	{
-		std::vector<ContextPath::Query> queries;
+		std::vector<mctx_path::query> queries;
 		for(;;)
 		{
 			if(consume('}'))
@@ -161,9 +161,9 @@ private:
 				fail("expected '=' after query path");
 
 			if(consume('*'))
-				queries.push_back(ContextPath::queryExists(std::move(relative_path)));
+				queries.push_back(mctx_path::query_exists(std::move(relative_path)));
 			else
-				queries.push_back(ContextPath::queryEquals(
+				queries.push_back(mctx_path::query_equals(
 					std::move(relative_path), parse_expected_value()));
 
 			if(consume('&'))
@@ -172,7 +172,7 @@ private:
 				break;
 			fail("expected '&' or '}' after query value");
 		}
-		return ContextPath::whereAll(std::move(queries));
+		return mctx_path::where_all(std::move(queries));
 	}
 
 	[[nodiscard]] std::string parse_quoted_string()
@@ -283,17 +283,17 @@ private:
 
 } // namespace
 
-ContextPath ContextPathSerializer::deserialize(std::string_view text)
+mctx_path mctx_path_serializer::deserialize(std::string_view text)
 {
-	return PathParser(text).parse();
+	return path_parser(text).parse();
 }
 
 namespace literals
 {
 
-ContextPath operator""_ctxpath(const char* text, std::size_t size)
+mctx_path operator""_mctx_path(const char* text, std::size_t size)
 {
-	return ContextPathSerializer::deserialize(std::string_view(text, size));
+	return mctx_path_serializer::deserialize(std::string_view(text, size));
 }
 
 } // namespace literals
