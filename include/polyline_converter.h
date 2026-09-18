@@ -320,7 +320,7 @@ public:
 
 	[[nodiscard]] bool all_valid() const noexcept { return invalid_count() == 0; }
 
-	[[nodiscard]] std::array<Output, Size> materialize(const Output& invalid_fallback) const
+	[[nodiscard]] std::array<Output, Size> materialize(const Output& invalid_fallback) const noexcept
 	{
 		std::array<Output, Size> result{};
 		for (std::size_t index = 0; index < Size; ++index)

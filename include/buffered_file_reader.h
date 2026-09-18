@@ -56,7 +56,7 @@ public:
 		close();
 	}
 
-	buffered_file_reader(buffered_file_reader&& other) :
+	buffered_file_reader(buffered_file_reader&& other) noexcept :
 		file_(std::exchange(other.file_, nullptr)),
 		buffer_(std::move(other.buffer_)),
 		buffer_begin_(other.buffer_begin_),
@@ -70,7 +70,7 @@ public:
 		other.reset_after_move();
 	}
 
-	buffered_file_reader& operator=(buffered_file_reader&& other)
+	buffered_file_reader& operator=(buffered_file_reader&& other) noexcept
 	{
 		if (this == &other)
 			return *this;
@@ -351,6 +351,7 @@ private:
 	{
 		if (buffer_.empty())
 			buffer_.resize(default_buffer_capacity);
+
 		buffer_begin_ = 0;
 		buffer_end_ = 0;
 		position_ = 0;

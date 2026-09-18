@@ -56,9 +56,9 @@ class buffered_block_list
 
 	struct control_block : block_link
 	{
-		value_slot values[block_capacity_];
-		std::uint8_t previous_offsets[block_capacity_];
-		std::uint8_t next_offsets[block_capacity_];
+		value_slot values[block_capacity_]{};
+		/*[[indeterminate]]*/ std::uint8_t previous_offsets[block_capacity_]{};
+		/*[[indeterminate]]*/ std::uint8_t next_offsets[block_capacity_]{};
 
 		control_block() noexcept : block_link{nullptr, nullptr, 0, 0, 0} {}
 	};
