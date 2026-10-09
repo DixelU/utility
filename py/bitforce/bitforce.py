@@ -1,12 +1,12 @@
 import hashlib
 from tqdm import tqdm
 import random
+import base58
 
 # Try to use coincurve for speed (highly recommended: pip install coincurve)
 # Fallback to ecdsa if not available (pip install ecdsa) – much slower for 1M+ candidates
 try:
-    from coincurve import PrivateKey
-
+    from coincurve import PrivateKey, PublicKey
     use_coincurve = True
     print("Using fast coincurve library.")
 except ImportError:
@@ -58,11 +58,37 @@ def priv_to_wif(priv_hex: str, compressed: bool = True) -> str:
 def random_256int() -> int:
     return random.getrandbits(256) ^ random.getrandbits(256)
 
+def search_range(base_int, start, end, compressed, target_addresses):
+    """Search priv_int in [base_int + start, base_int + end)."""
+    k_min = max(base_int + start, 1)
+    k_max = min(base_int + end, curve_order)
+    if k_min >= k_max:
+        return None
+
+    # ONE scalar multiplication for the whole chunk
+    Q = PrivateKey(k_min.to_bytes(32, 'big')).public_key
+
+    k = k_min
+    while k < k_max:
+        pub_bytes = Q.format(compressed=compressed)
+        addr = pub_to_address(pub_bytes)
+        if addr in target_addresses:
+            return (addr, pub_bytes, k)
+
+        # Advance to (k+1)·G — cheap point addition
+        Q = PublicKey.combine_keys([Q, _G])
+        k += 1
+
+    return None
+
 # ----------------------------- Main Script -----------------------------
 print("Bitcoin partial private key brute-forcer")
 print("Assumes legacy P2PKH addresses (mainnet).")
 
-missing_bits = 20
+# Generator point G (built once)
+_G = PrivateKey((1).to_bytes(32, 'big')).public_key
+
+missing_bits = 24
 compressed = False
 
 target_address = frozenset([
@@ -73,7 +99,7 @@ target_address = frozenset([
 
 # target_address = None
 
-base_int =    random_256int()
+base_int =    random_256int() & ~((1 << missing_bits) - 1)
 num_candidates = 1 << missing_bits
 curve_order = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
@@ -83,24 +109,22 @@ print(f"\nBase int: {base_int:064x}")
 found_key = None
 if target_address:
     # Mode 1: Search for specific address → fully offline, stops when found
-    for i in tqdm(range(num_candidates)):
-        priv_int = base_int ^ i
-        if priv_int == 0 or priv_int >= curve_order:
-            continue
+    
+    res = search_range(base_int, 1, num_candidates, compressed, target_address)
 
-        pub = get_public_key(priv_int, compressed)
-        addr = pub_to_address(pub)
-        if addr in target_address:
-            priv_hex = f"{priv_int:064x}"
-            wif = priv_to_wif(priv_hex, compressed)
-            
-            print("\n=== FOUND MATCH ===")
-            print(f"Private key (hex): {priv_hex}")
-            print(f"Private key (WIF): {wif}")
-            print(f"Address:           {addr}")
-            found_key = priv_hex
+    if res:
+        (addr, pub_bytes, priv_int) = res
 
-            exit(0)
+        priv_hex = f"{priv_int:064x}"
+        wif = priv_to_wif(priv_hex, compressed)
+        
+        print("\n=== FOUND MATCH ===")
+        print(f"Private key (hex): {priv_hex}")
+        print(f"Private key (WIF): {wif}")
+        print(f"Address:           {addr}")
+        found_key = priv_hex
+
+        exit(0)
 
     if not found_key:
         print("\nNo match found in the search space.")
@@ -111,7 +135,7 @@ else:
     with open(filename, 'w') as f:
         f.write("# List of possible Bitcoin addresses (one per line)\n")
         for i in tqdm(range(num_candidates)):
-            priv_int = base_int ^ i
+            priv_int = base_int | i
             if priv_int == 0 or priv_int >= curve_order:
                 continue
 
