@@ -64,8 +64,14 @@ print("Assumes legacy P2PKH addresses (mainnet).")
 
 missing_bits = 20
 compressed = False
-target_address = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" # "1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW"
-# input("Enter target address if known (optional – enables early stop): ").strip() or None
+
+target_address = set([
+    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW",
+    "1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6"
+])
+
+target_address = None
 
 base_int =    random_256int()
 num_candidates = 1 << missing_bits
@@ -81,16 +87,19 @@ if target_address:
         priv_int = base_int ^ i
         if priv_int == 0 or priv_int >= curve_order:
             continue
+            
         pub = get_public_key(priv_int, compressed)
         addr = pub_to_address(pub)
-        if addr == target_address:
+        if addr in target_address:
             priv_hex = f"{priv_int:064x}"
             wif = priv_to_wif(priv_hex, compressed)
+            
             print("\n=== FOUND MATCH ===")
             print(f"Private key (hex): {priv_hex}")
             print(f"Private key (WIF): {wif}")
             print(f"Address:           {addr}")
             found_key = priv_hex
+
             exit(0)
 
     if not found_key:
@@ -102,12 +111,14 @@ else:
     with open(filename, 'w') as f:
         f.write("# List of possible Bitcoin addresses (one per line)\n")
         for i in tqdm(range(num_candidates)):
-            priv_int = base_int | i
+            priv_int = base_int ^ i
             if priv_int == 0 or priv_int >= curve_order:
                 continue
+
             pub = get_public_key(priv_int, compressed)
             addr = pub_to_address(pub)
-            f.write(addr + '\n')
+            f.write(f"{addr} - {pub} - {priv_int}\n")
+
     print(f"\nDone! {num_candidates:,} candidate addresses saved to '{filename}'.")
     print("You can now check these addresses online (e.g. via block explorer API) for balances.")
 
