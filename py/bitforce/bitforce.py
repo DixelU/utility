@@ -65,7 +65,7 @@ print("Assumes legacy P2PKH addresses (mainnet).")
 missing_bits = 20
 compressed = False
 
-target_address = set([
+target_address = frozenset([
     "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
     "1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW",
     "1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6"
@@ -87,7 +87,7 @@ if target_address:
         priv_int = base_int ^ i
         if priv_int == 0 or priv_int >= curve_order:
             continue
-            
+
         pub = get_public_key(priv_int, compressed)
         addr = pub_to_address(pub)
         if addr in target_address:
@@ -121,5 +121,3 @@ else:
 
     print(f"\nDone! {num_candidates:,} candidate addresses saved to '{filename}'.")
     print("You can now check these addresses online (e.g. via block explorer API) for balances.")
-
-# print("\nWarning: Handle any recovered keys with extreme care – never expose them online.")
