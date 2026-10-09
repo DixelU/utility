@@ -38,6 +38,12 @@ constexpr std::initializer_list<std::string_view> target_addresses = {
 	"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
 	"1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW",
 	"1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6",
+	"1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF",
+	"1LdRcdxfbSnmCYYNdeYpUnztiYzVfBEQeC",
+	"12ib7dApVFvg82TXKycWBNpN8kFyiAN1dr",
+	"12tkqA9xSoowkzoERHMWNKsTey55YEBqkv",
+	"1HLvaTs3zR3oev9ya7Pzp3GB9Gqfg6XYJT",
+	"167ZWTT8n6s4ya8cGjqNNQjDwDGY31vmHg"
 };
 
 // Point additions that share one field inversion.
