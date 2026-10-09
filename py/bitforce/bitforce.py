@@ -71,7 +71,7 @@ target_address = frozenset([
     "1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6"
 ])
 
-target_address = None
+# target_address = None
 
 base_int =    random_256int()
 num_candidates = 1 << missing_bits
