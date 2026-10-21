@@ -60,7 +60,7 @@ def random_256int() -> int:
 
 def search_range(base_int, start, end, compressed, target_addresses):
     """Search priv_int in [base_int + start, base_int + end)."""
-    k_min = max(base_int + start, 1)
+    k_min = max(base_int + start, 0)
     k_max = min(base_int + end, curve_order)
     if k_min >= k_max:
         return None
@@ -68,16 +68,24 @@ def search_range(base_int, start, end, compressed, target_addresses):
     # ONE scalar multiplication for the whole chunk
     Q = PrivateKey(k_min.to_bytes(32, 'big')).public_key
 
+    cnt = 0
     k = k_min
     while k < k_max:
-        pub_bytes = Q.format(compressed=compressed)
-        addr = pub_to_address(pub_bytes)
-        if addr in target_addresses:
-            return (addr, pub_bytes, k)
+        pub_c = Q.format(compressed=True)
+        pub_u = Q.format(compressed=False)
+
+        for pub_bytes, comp in ((pub_c, True), (pub_u, False)):
+            addr = pub_to_address(pub_bytes)
+            if addr in target_addresses:
+                return (addr, pub_bytes, k, comp)
 
         # Advance to (k+1)·G — cheap point addition
         Q = PublicKey.combine_keys([Q, _G])
         k += 1
+        cnt += 1
+
+        if k & 0xFFFF == 0:
+            print(f"{cnt}/{end}")
 
     return None
 
@@ -94,12 +102,13 @@ compressed = False
 target_address = frozenset([
     "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
     "1PeizMg76Cf96nUQrYg8xuoZWLQozU5zGW",
-    "1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6"
+    "1K6KoYC69NnafWJ7YgtrpwJxBLiijWqwa6",
+    "1EHNa6Q4Jz2uvNExL497mck4Q3t0FQBiop"
 ])
 
 # target_address = None
 
-base_int =    random_256int() & ~((1 << missing_bits) - 1)
+base_int = random_256int() & ~((1 << missing_bits) - 1)
 num_candidates = 1 << missing_bits
 curve_order = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
@@ -110,13 +119,13 @@ found_key = None
 if target_address:
     # Mode 1: Search for specific address → fully offline, stops when found
     
-    res = search_range(base_int, 1, num_candidates, compressed, target_address)
+    res = search_range(base_int, 0, num_candidates, compressed, target_address)
 
     if res:
-        (addr, pub_bytes, priv_int) = res
+        (addr, pub_bytes, priv_int, comp) = res
 
         priv_hex = f"{priv_int:064x}"
-        wif = priv_to_wif(priv_hex, compressed)
+        wif = priv_to_wif(priv_hex, comp)
         
         print("\n=== FOUND MATCH ===")
         print(f"Private key (hex): {priv_hex}")

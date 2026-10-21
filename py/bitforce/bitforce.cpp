@@ -35,7 +35,7 @@ enum class address_format { base58, bech32, both };
 namespace config
 {
 
-constexpr int missing_bits = 24;
+constexpr int missing_bits = 28;
 constexpr bool compressed = false; // Base58 only; Bech32 always uses compressed public keys.
 constexpr auto dump_format = address_format::both;
 
@@ -426,12 +426,14 @@ struct address_targets
 	[[nodiscard]] std::optional<address_format> match(const std::span<const std::uint8_t> pub) const
 	{
 		hash160 h;
+
 		if (!base58.empty())
 		{
 			h = hash160_of(pub);
 			if (std::ranges::binary_search(base58, h))
 				return address_format::base58;
 		}
+
 		if (!bech32.empty())
 		{
 			std::array<std::uint8_t, 33> storage [[indeterminate]];
@@ -442,6 +444,7 @@ struct address_targets
 			if (std::ranges::binary_search(bech32, h))
 				return address_format::bech32;
 		}
+
 		return std::nullopt;
 	}
 };
@@ -767,6 +770,15 @@ private:
 #ifndef BITFORCE_TEST
 int main(int argc, char** argv)
 {
+	// Keep types separate: an uncompressed legacy hash is not a P2WPKH candidate.
+	// The hot loop compares hashes, without encoding either address format.
+	address_targets targets;
+	for (std::string_view address : config::target_addresses)
+	{
+		if (!targets.add(address))
+			die("Embedded list - not a supported mainnet P2PKH/P2WPKH address: " + std::string{address});
+	}
+
 	if (argc == 3 && std::string_view{argv[1]} == "--derive")
 	{
 		const std::string_view hex{argv[2]};
@@ -796,23 +808,30 @@ int main(int argc, char** argv)
 
 		return 0;
 	}
-	if (argc != 1)
+
+	if (argc == 3 && std::string_view{argv[1]} == "--addr_file")
 	{
-		std::cerr << "Usage: bitforce [--derive <64-digit private-key hex>]\n";
+		targets = {};
+		std::ifstream fin(argv[2]);
+		std::string address;
+		std::string coins;
+
+		while (fin >> address >> coins)
+		{
+			if (targets.add(address))
+				continue;
+
+			std::cout << "Embedded list - not a supported mainnet P2PKH/P2WPKH address: " + std::string{address} << "\n";
+		}
+	}
+	else if (argc != 1)
+	{
+		std::cerr << "Usage: bitforce [--derive <64-digit private-key hex>]|[--addr_file <filename>]\n";
 		return argc == 2 && std::string_view{argv[1]} == "--help" ? 0 : 2;
 	}
 
 	std::cout << "Bitcoin partial private key brute-forcer (C++)\n"
 		<< "Supports mainnet P2PKH (Base58) and P2WPKH (Bech32) addresses.\n";
-
-	// Keep types separate: an uncompressed legacy hash is not a P2WPKH candidate.
-	// The hot loop compares hashes, without encoding either address format.
-	address_targets targets;
-	for (std::string_view address : config::target_addresses)
-	{
-		if (!targets.add(address))
-			die("not a supported mainnet P2PKH/P2WPKH address: " + std::string{address});
-	}
 
 	targets.sort();
 
@@ -858,7 +877,7 @@ int main(int argc, char** argv)
 		{
 			progress.tick(index);
 			const auto match = targets.match(pub);
-			if (!match)
+			if (!match) [[likely]]
 				return false;
 
 			hit = index;
