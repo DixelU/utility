@@ -811,6 +811,8 @@ int main(int argc, char** argv)
 
 	if (argc == 3 && std::string_view{argv[1]} == "--addr_file")
 	{
+		std::cout << "Reading addresses from file...\n" << std::flush;
+
 		targets = {};
 		std::ifstream fin(argv[2]);
 		std::string address;
