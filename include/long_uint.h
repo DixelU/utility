@@ -73,6 +73,79 @@ constexpr wide_product multiply_wide(std::uint64_t lhs, std::uint64_t rhs) noexc
 #endif
 }
 
+// Divides the 128-bit value (high:low) by a nonzero divisor and returns the
+// 64-bit quotient. Requires high < divisor so that the quotient fits: Knuth's
+// algorithm D reduced to two 32-bit digits.
+constexpr std::uint64_t divide_wide_impl(
+	std::uint64_t high,
+	std::uint64_t low,
+	std::uint64_t divisor,
+	std::uint64_t& remainder) noexcept
+{
+	constexpr std::uint64_t digit_base = std::uint64_t{1} << 32;
+
+	const int shift = std::countl_zero(divisor);
+	divisor <<= shift;
+	const std::uint64_t divisor_high = divisor >> 32;
+	const std::uint64_t divisor_low = static_cast<std::uint32_t>(divisor);
+
+	const std::uint64_t normalized_high = shift == 0
+		? high
+		: (high << shift) | (low >> (64 - shift));
+	const std::uint64_t normalized_low = low << shift;
+	const std::uint64_t low_digit_high = normalized_low >> 32;
+	const std::uint64_t low_digit_low = static_cast<std::uint32_t>(normalized_low);
+
+	std::uint64_t quotient_high = normalized_high / divisor_high;
+	std::uint64_t partial = normalized_high - quotient_high * divisor_high;
+	while (quotient_high >= digit_base ||
+		quotient_high * divisor_low > digit_base * partial + low_digit_high)
+	{
+		--quotient_high;
+		partial += divisor_high;
+		if (partial >= digit_base)
+			break;
+	}
+
+	const std::uint64_t middle = normalized_high * digit_base + low_digit_high - quotient_high * divisor;
+	std::uint64_t quotient_low = middle / divisor_high;
+	partial = middle - quotient_low * divisor_high;
+	while (quotient_low >= digit_base ||
+		quotient_low * divisor_low > digit_base * partial + low_digit_low)
+	{
+		--quotient_low;
+		partial += divisor_high;
+		if (partial >= digit_base)
+			break;
+	}
+
+	remainder = (middle * digit_base + low_digit_low - quotient_low * divisor) >> shift;
+	return quotient_high * digit_base + quotient_low;
+}
+
+// Same contract as divide_wide_impl: divisor != 0 and high < divisor.
+constexpr std::uint64_t divide_wide(
+	std::uint64_t high,
+	std::uint64_t low,
+	std::uint64_t divisor,
+	std::uint64_t& remainder) noexcept
+{
+	if consteval
+	{
+		return divide_wide_impl(high, low, divisor, remainder);
+	}
+
+#if defined(__SIZEOF_INT128__) && !defined(__wasm__)
+	const __uint128_t dividend = (static_cast<__uint128_t>(high) << 64) | low;
+	remainder = static_cast<std::uint64_t>(dividend % divisor);
+	return static_cast<std::uint64_t>(dividend / divisor);
+#elif defined(_MSC_VER) && defined(_M_X64)
+	return _udiv128(high, low, divisor, &remainder);
+#else
+	return divide_wide_impl(high, low, divisor, remainder);
+#endif
+}
+
 } // namespace long_uint_detail
 
 // Fixed-width unsigned integers with 2^(Degree + 1) little-endian 64-bit
@@ -347,10 +420,13 @@ public:
 	[[nodiscard]] constexpr self_type operator*(const self_type& rhs) const noexcept
 	{
 		self_type result;
-		for (size_type lhs_index = 0; lhs_index < size; ++lhs_index)
+		const size_type lhs_used = used_limbs();
+		const size_type rhs_used = rhs.used_limbs();
+		for (size_type lhs_index = 0; lhs_index < lhs_used; ++lhs_index)
 		{
 			base_type carry = 0;
-			for (size_type rhs_index = 0; lhs_index + rhs_index < size; ++rhs_index)
+			size_type rhs_index = 0;
+			for (; rhs_index < rhs_used && lhs_index + rhs_index < size; ++rhs_index)
 			{
 				const auto product = long_uint_detail::multiply_wide(
 					limbs_[lhs_index], rhs[rhs_index]);
@@ -362,6 +438,9 @@ public:
 				destination = with_carry;
 				carry = product.high + destination_carry + addition_carry;
 			}
+			// Nothing has been accumulated this far up yet, so the carry is stored, not added.
+			if (lhs_index + rhs_index < size)
+				result[lhs_index + rhs_index] = carry;
 		}
 		return result;
 	}
@@ -375,8 +454,15 @@ public:
 		const self_type& dividend,
 		const self_type& divisor)
 	{
-		if (!divisor)
+		const size_type divisor_used = divisor.used_limbs();
+		if (divisor_used == 0)
 			throw std::domain_error("long_uint division by zero");
+		if (divisor_used == 1)
+		{
+			base_type small_remainder = 0;
+			const self_type small_quotient = divmod_small(dividend, divisor[0], small_remainder);
+			return {small_quotient, self_type(small_remainder)};
+		}
 
 		self_type quotient;
 		self_type remainder;
@@ -455,6 +541,15 @@ public:
 	[[nodiscard]] constexpr size_type bit_length() const noexcept
 	{
 		return bits - leading_zeros();
+	}
+
+	// Count of limbs up to and including the most significant nonzero one.
+	[[nodiscard]] constexpr size_type used_limbs() const noexcept
+	{
+		size_type count = size;
+		while (count > 0 && limbs_[count - 1] == 0)
+			--count;
+		return count;
 	}
 
 	[[nodiscard]] constexpr size_type __leading_zeros() const noexcept
@@ -575,21 +670,11 @@ private:
 
 		self_type quotient;
 		base_type rolling_remainder = 0;
-		for (size_type index = size; index-- > 0;)
+		for (size_type index = dividend.used_limbs(); index-- > 0;)
 		{
-#if defined(__SIZEOF_INT128__) && !defined(__wasm__)
-			const __uint128_t combined =
-				(static_cast<__uint128_t>(rolling_remainder) << 64) | dividend[index];
-			quotient[index] = static_cast<base_type>(combined / divisor);
-			rolling_remainder = static_cast<base_type>(combined % divisor);
-#elif defined(_MSC_VER) && defined(_M_X64)
-			quotient[index] = _udiv128(rolling_remainder, dividend[index], divisor, &rolling_remainder);
-#else
-			self_type single_limb_divisor(divisor);
-			const auto [fallback_quotient, fallback_remainder] = divmod(dividend, single_limb_divisor);
-			remainder = static_cast<base_type>(fallback_remainder);
-			return fallback_quotient;
-#endif
+			// rolling_remainder < divisor holds at every step, as divide_wide requires.
+			quotient[index] = long_uint_detail::divide_wide(
+				rolling_remainder, dividend[index], divisor, rolling_remainder);
 		}
 		remainder = rolling_remainder;
 		return quotient;

@@ -178,15 +178,158 @@ void test_long_uint_degree(std::mt19937_64& random, std::size_t iterations)
 	require(invalid_input.fail() && preserved == value_type(7), "invalid stream input must set failbit and preserve value");
 }
 
+// Limbs are zero, boundary values or random, so operands have the empty
+// leading and interior limbs that full-width random values never produce.
+template<std::uint64_t Degree>
+dixelu::long_uint<Degree> sparse_value(std::mt19937_64& random)
+{
+	constexpr std::array<std::uint64_t, 6> special{
+		0, 0, 1, 0x8000000000000000ULL, ~0ULL, 0x00000000FFFFFFFFULL};
+	dixelu::long_uint<Degree> result;
+	for (std::size_t index = 0; index < result.size; ++index)
+	{
+		const std::uint64_t pick = random();
+		result[index] = pick % 3 == 0 ? random() : special[(pick >> 8) % special.size()];
+	}
+	return result;
+}
+
+template<std::uint64_t Degree>
+void test_long_uint_sparse_degree(std::mt19937_64& random, std::size_t iterations)
+{
+	using value_type = dixelu::long_uint<Degree>;
+	const cpp_int mask = (cpp_int(1) << value_type::bits) - 1;
+
+	for (std::size_t iteration = 0; iteration < iterations; ++iteration)
+	{
+		const value_type lhs = sparse_value<Degree>(random);
+		value_type rhs = sparse_value<Degree>(random);
+		if (iteration % 2 == 0)
+		{
+			// Single-limb divisor: the fast path in divmod.
+			rhs = value_type(sparse_value<Degree>(random)[0]);
+		}
+		if (!rhs)
+			rhs = value_type(1);
+		const cpp_int lhs_reference = to_reference(lhs);
+		const cpp_int rhs_reference = to_reference(rhs);
+
+		const std::size_t expected_used = lhs_reference == 0
+			? 0
+			: boost::multiprecision::msb(lhs_reference) / 64 + 1;
+		require(lhs.used_limbs() == expected_used, "long_uint used limb count mismatch");
+		require(to_reference(lhs * rhs) == ((lhs_reference * rhs_reference) & mask), "long_uint sparse multiplication mismatch");
+		require(to_reference(rhs * lhs) == ((lhs_reference * rhs_reference) & mask), "long_uint sparse multiplication is not commutative");
+
+		const auto [quotient, remainder] = value_type::divmod(lhs, rhs);
+		require(to_reference(quotient) == lhs_reference / rhs_reference, "long_uint sparse division mismatch");
+		require(to_reference(remainder) == lhs_reference % rhs_reference, "long_uint sparse remainder mismatch");
+		require(lhs.to_string() == lhs_reference.convert_to<std::string>(), "long_uint sparse decimal formatting mismatch");
+	}
+}
+
+// Divides (high:low) by divisor; high < divisor and divisor != 0 are the preconditions.
+void test_long_uint_divide_wide(std::mt19937_64& random, std::size_t iterations)
+{
+	using namespace dixelu::long_uint_detail;
+
+	const auto check = [](std::uint64_t high, std::uint64_t low, std::uint64_t divisor)
+	{
+		const cpp_int dividend = (cpp_int(high) << 64) | low;
+		const cpp_int expected_quotient = dividend / divisor;
+		const cpp_int expected_remainder = dividend % divisor;
+
+		std::uint64_t portable_remainder = 0;
+		const std::uint64_t portable_quotient = divide_wide_impl(high, low, divisor, portable_remainder);
+		require(
+			portable_quotient == expected_quotient && portable_remainder == expected_remainder,
+			"portable 128-by-64 division mismatch");
+
+		std::uint64_t native_remainder = 0;
+		const std::uint64_t native_quotient = divide_wide(high, low, divisor, native_remainder);
+		require(
+			native_quotient == expected_quotient && native_remainder == expected_remainder,
+			"native 128-by-64 division mismatch");
+	};
+
+	const auto make_divisor = [&random]() -> std::uint64_t
+	{
+		std::uint64_t divisor = 0;
+		switch (random() % 6)
+		{
+		case 0: divisor = random(); break;
+		case 1: divisor = random() >> (random() % 63); break;
+		// A leading digit of 0x80000000 is where the quotient estimate overshoots most.
+		case 2: divisor = (((0x80000000ULL + random() % 8) << 32) | (random() % 2 ? 0xFFFFFFFFULL : random() % 4)) >> (random() % 32); break;
+		case 3: divisor = (std::uint64_t{1} << 63) | (random() % 4); break;
+		case 4: divisor = ~std::uint64_t{0} - random() % 3; break;
+		default: divisor = (std::uint64_t{1} << (random() % 64)) + random() % 3; break;
+		}
+		return divisor == 0 ? 1 : divisor;
+	};
+
+	for (std::size_t iteration = 0; iteration < iterations; ++iteration)
+	{
+		const std::uint64_t divisor = make_divisor();
+		std::uint64_t high = 0;
+		switch (random() % 4)
+		{
+		case 0: high = 0; break;
+		case 1: high = divisor - 1; break;
+		case 2: high = random() % divisor; break;
+		default: high = divisor - 1 - random() % (divisor < 3 ? divisor : 3); break;
+		}
+		std::uint64_t low = 0;
+		switch (random() % 4)
+		{
+		case 0: low = 0; break;
+		case 1: low = 1; break;
+		case 2: low = ~std::uint64_t{0}; break;
+		default: low = random(); break;
+		}
+		check(high, low, divisor);
+	}
+}
+
+template<std::uint64_t Degree>
+constexpr bool constexpr_divmod_consistent(
+	const dixelu::long_uint<Degree>& dividend,
+	const dixelu::long_uint<Degree>& divisor)
+{
+	const auto [quotient, remainder] = dixelu::long_uint<Degree>::divmod(dividend, divisor);
+	return remainder < divisor && quotient * divisor + remainder == dividend;
+}
+
 void test_long_uint()
 {
 	static_assert(dixelu::long_uint<0>::bits == 128);
 	static_assert(dixelu::long_uint<1>::bits == 256);
 	static_assert(std::numeric_limits<dixelu::long_uint<0>>::is_modulo);
 
+	// Constant evaluation takes the portable division, whatever the runtime path is.
+	constexpr auto make_wide = [](std::uint64_t low, std::uint64_t high)
+	{
+		dixelu::long_uint<0> value;
+		value[0] = low;
+		value[1] = high;
+		return value;
+	};
+	static_assert(dixelu::long_uint<0>::divmod(make_wide(1000, 0), make_wide(7, 0)).first == make_wide(142, 0));
+	static_assert(dixelu::long_uint<0>::divmod(make_wide(1000, 0), make_wide(7, 0)).second == make_wide(6, 0));
+	static_assert(constexpr_divmod_consistent(make_wide(0x0123456789ABCDEFULL, 0x00000000DEADBEEFULL), make_wide(1'000'000'007, 0)));
+	static_assert(constexpr_divmod_consistent(make_wide(0, 0x8000000000000000ULL), make_wide(~0ULL, 0)));
+	static_assert(constexpr_divmod_consistent(make_wide(~0ULL, ~0ULL), make_wide(1, 0)));
+	static_assert(constexpr_divmod_consistent(make_wide(~0ULL, ~0ULL), make_wide(~0ULL, 0)));
+	static_assert(constexpr_divmod_consistent(make_wide(12345, 0xABCDEF), make_wide(99, 0x1234)));
+	static_assert(constexpr_divmod_consistent(make_wide(7, 0), make_wide(0, 1)));
+	static_assert(make_wide(0, 0).used_limbs() == 0 && make_wide(5, 0).used_limbs() == 1 && make_wide(0, 5).used_limbs() == 2);
+
 	std::mt19937_64 random(0xA11CE5EEDULL);
 	test_long_uint_degree<0>(random, 1500);
 	test_long_uint_degree<1>(random, 500);
+	test_long_uint_sparse_degree<0>(random, 20000);
+	test_long_uint_sparse_degree<1>(random, 20000);
+	test_long_uint_divide_wide(random, 400000);
 
 	dixelu::long_uint<0> low;
 	low[0] = 0x0123456789ABCDEFULL;
