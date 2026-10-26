@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -292,6 +293,122 @@ void test_long_uint_divide_wide(std::mt19937_64& random, std::size_t iterations)
 }
 
 template<std::uint64_t Degree>
+dixelu::long_uint<Degree> from_reference(const cpp_int& value)
+{
+	const cpp_int limb_mask(~std::uint64_t{0});
+	dixelu::long_uint<Degree> result;
+	for (std::size_t index = 0; index < result.size; ++index)
+	{
+		const cpp_int limb = (value >> (64 * index)) & limb_mask;
+		result[index] = limb.convert_to<std::uint64_t>();
+	}
+	return result;
+}
+
+template<std::uint64_t Degree>
+dixelu::long_uint<Degree> from_limbs(std::initializer_list<std::uint64_t> limbs)
+{
+	dixelu::long_uint<Degree> result;
+	require(limbs.size() <= result.size, "from_limbs given more limbs than the type holds");
+	std::size_t index = 0;
+	for (const std::uint64_t limb : limbs)
+		result[index++] = limb;
+	return result;
+}
+
+template<std::uint64_t Degree>
+void check_division(const dixelu::long_uint<Degree>& dividend, const dixelu::long_uint<Degree>& divisor)
+{
+	const auto [quotient, remainder] = dixelu::long_uint<Degree>::divmod(dividend, divisor);
+	const cpp_int dividend_reference = to_reference(dividend);
+	const cpp_int divisor_reference = to_reference(divisor);
+	require(to_reference(quotient) == dividend_reference / divisor_reference, "long_uint multi-limb quotient mismatch");
+	require(to_reference(remainder) == dividend_reference % divisor_reference, "long_uint multi-limb remainder mismatch");
+}
+
+// Divisors of two or more limbs, with dividends built around them (exact
+// multiples, maximal remainders) so the digit estimate is wrong as often as
+// possible, including the rare add-back step.
+template<std::uint64_t Degree>
+void test_long_uint_multi_limb_division(std::mt19937_64& random, std::size_t iterations)
+{
+	using value_type = dixelu::long_uint<Degree>;
+	constexpr std::uint64_t all = ~std::uint64_t{0};
+	constexpr std::uint64_t high_bit = std::uint64_t{1} << 63;
+
+	// Limbs are listed least significant first. This is the classic add-back
+	// case: the estimate saturates, is still one too high after the
+	// second-limb check, and the multiply-subtract goes negative.
+	if constexpr (value_type::size >= 3)
+	{
+		check_division<Degree>(from_limbs<Degree>({0, all - 1, high_bit}), from_limbs<Degree>({all, high_bit}));
+		check_division<Degree>(from_limbs<Degree>({all, all, all}), from_limbs<Degree>({all, all}));
+		check_division<Degree>(from_limbs<Degree>({0, 0, high_bit}), from_limbs<Degree>({1, high_bit}));
+		check_division<Degree>(from_limbs<Degree>({7, 0, 1}), from_limbs<Degree>({1, 1}));
+	}
+	check_division<Degree>(from_limbs<Degree>({0, 1}), from_limbs<Degree>({0, 1}));
+	check_division<Degree>(from_limbs<Degree>({5, 1}), from_limbs<Degree>({6, 1}));
+	check_division<Degree>(from_limbs<Degree>({1, 1}), from_limbs<Degree>({1, 1}));
+	check_division<Degree>(value_type::maximum_value(), from_limbs<Degree>({all, all}));
+	check_division<Degree>(value_type::maximum_value(), from_limbs<Degree>({0, 1}));
+	check_division<Degree>(value_type::maximum_value(), from_limbs<Degree>({1, high_bit}));
+	check_division<Degree>(from_limbs<Degree>({0, high_bit}), from_limbs<Degree>({all, all}));
+
+	const cpp_int mask = (cpp_int(1) << value_type::bits) - 1;
+	constexpr std::array<std::uint64_t, 8> edge{
+		0, 1, 2, 0x7FFFFFFFFFFFFFFFULL, 0x8000000000000000ULL, 0x8000000000000001ULL, ~0ULL - 1, ~0ULL};
+	const auto pick = [&random, &edge]() -> std::uint64_t
+	{
+		return random() % 2 == 0 ? edge[random() % edge.size()] : random();
+	};
+
+	for (std::size_t iteration = 0; iteration < iterations; ++iteration)
+	{
+		const std::size_t divisor_limbs = 2 + random() % (value_type::size - 1);
+		value_type divisor;
+		for (std::size_t index = 0; index < divisor_limbs; ++index)
+			divisor[index] = pick();
+		if (divisor[divisor_limbs - 1] == 0)
+			divisor[divisor_limbs - 1] = edge[1 + random() % (edge.size() - 1)];
+		const cpp_int divisor_reference = to_reference(divisor);
+
+		cpp_int dividend_reference = 0;
+		switch (random() % 4)
+		{
+		case 0:
+			dividend_reference = to_reference(sparse_value<Degree>(random));
+			break;
+		case 1:
+		{
+			// divisor * quotient + remainder, with remainder zero, maximal or random
+			value_type quotient;
+			const std::size_t quotient_limbs = 1 + random() % (value_type::size - divisor_limbs + 1);
+			for (std::size_t index = 0; index < quotient_limbs; ++index)
+				quotient[index] = pick();
+			cpp_int remainder = 0;
+			switch (random() % 3)
+			{
+			case 0: break;
+			case 1: remainder = divisor_reference - 1; break;
+			default: remainder = to_reference(random_value<Degree>(random)) % divisor_reference; break;
+			}
+			dividend_reference = divisor_reference * to_reference(quotient) + remainder;
+			break;
+		}
+		case 2:
+			// a limb-aligned multiple of the divisor, minus one
+			dividend_reference = (divisor_reference << (64 * (random() % (value_type::size - divisor_limbs + 1)))) - 1;
+			break;
+		default:
+			dividend_reference = to_reference(random_value<Degree>(random)) >> (random() % value_type::bits);
+			break;
+		}
+		dividend_reference &= mask;
+		check_division<Degree>(from_reference<Degree>(dividend_reference), divisor);
+	}
+}
+
+template<std::uint64_t Degree>
 constexpr bool constexpr_divmod_consistent(
 	const dixelu::long_uint<Degree>& dividend,
 	const dixelu::long_uint<Degree>& divisor)
@@ -324,12 +441,31 @@ void test_long_uint()
 	static_assert(constexpr_divmod_consistent(make_wide(7, 0), make_wide(0, 1)));
 	static_assert(make_wide(0, 0).used_limbs() == 0 && make_wide(5, 0).used_limbs() == 1 && make_wide(0, 5).used_limbs() == 2);
 
+	// Three-limb dividend over two-limb divisor: saturated estimate plus the add-back step.
+	constexpr auto make_wider = [](std::uint64_t a, std::uint64_t b, std::uint64_t c, std::uint64_t d)
+	{
+		dixelu::long_uint<1> value;
+		value[0] = a;
+		value[1] = b;
+		value[2] = c;
+		value[3] = d;
+		return value;
+	};
+	static_assert(constexpr_divmod_consistent(
+		make_wider(0, ~0ULL - 1, 0x8000000000000000ULL, 0), make_wider(~0ULL, 0x8000000000000000ULL, 0, 0)));
+	static_assert(constexpr_divmod_consistent(
+		make_wider(~0ULL, ~0ULL, ~0ULL, ~0ULL), make_wider(~0ULL, ~0ULL, 1, 0)));
+	static_assert(constexpr_divmod_consistent(
+		make_wider(123, 456, 789, 1011), make_wider(1, 2, 3, 4)));
+
 	std::mt19937_64 random(0xA11CE5EEDULL);
 	test_long_uint_degree<0>(random, 1500);
 	test_long_uint_degree<1>(random, 500);
 	test_long_uint_sparse_degree<0>(random, 20000);
 	test_long_uint_sparse_degree<1>(random, 20000);
 	test_long_uint_divide_wide(random, 400000);
+	test_long_uint_multi_limb_division<0>(random, 100000);
+	test_long_uint_multi_limb_division<1>(random, 100000);
 
 	dixelu::long_uint<0> low;
 	low[0] = 0x0123456789ABCDEFULL;

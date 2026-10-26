@@ -146,6 +146,18 @@ constexpr std::uint64_t divide_wide(
 #endif
 }
 
+// Top 64 bits of (high:low) << shift, for shift in [0, 63].
+constexpr std::uint64_t funnel_shift_left(std::uint64_t high, std::uint64_t low, unsigned shift) noexcept
+{
+	return shift == 0 ? high : (high << shift) | (low >> (64 - shift));
+}
+
+// Bottom 64 bits of (high:low) >> shift, for shift in [0, 63].
+constexpr std::uint64_t funnel_shift_right(std::uint64_t high, std::uint64_t low, unsigned shift) noexcept
+{
+	return shift == 0 ? low : (low >> shift) | (high << (64 - shift));
+}
+
 } // namespace long_uint_detail
 
 // Fixed-width unsigned integers with 2^(Degree + 1) little-endian 64-bit
@@ -464,19 +476,102 @@ public:
 			return {small_quotient, self_type(small_remainder)};
 		}
 
-		self_type quotient;
-		self_type remainder;
-		for (size_type bit = bits; bit-- > 0;)
+		const size_type dividend_used = dividend.used_limbs();
+		if (dividend_used < divisor_used)
+			return {self_type(), dividend};
+
+		// Knuth's algorithm D (TAOCP 4.3.1) in base 2^64. Both operands are
+		// scaled so the divisor's top limb has its high bit set, which keeps the
+		// quotient-digit estimate within 2 of the true digit.
+		const unsigned shift = static_cast<unsigned>(std::countl_zero(divisor[divisor_used - 1]));
+		std::array<base_type, size> scaled_divisor{};
+		std::array<base_type, size + 1> scaled{};
+		for (size_type index = divisor_used; index-- > 0;)
 		{
-			const bool overflow = remainder.get_bit(bits - 1);
-			remainder <<= 1;
-			remainder.set_bit(0, dividend.get_bit(bit));
-			if (overflow || remainder >= divisor)
-			{
-				remainder -= divisor;
-				quotient.set_bit(bit);
-			}
+			scaled_divisor[index] = long_uint_detail::funnel_shift_left(
+				divisor[index], index == 0 ? 0 : divisor[index - 1], shift);
 		}
+		for (size_type index = dividend_used + 1; index-- > 0;)
+		{
+			scaled[index] = long_uint_detail::funnel_shift_left(
+				index == dividend_used ? 0 : dividend[index], index == 0 ? 0 : dividend[index - 1], shift);
+		}
+
+		const base_type top = scaled_divisor[divisor_used - 1];
+		const base_type next = scaled_divisor[divisor_used - 2];
+		self_type quotient;
+		for (size_type position = dividend_used - divisor_used + 1; position-- > 0;)
+		{
+			const base_type window_top = scaled[position + divisor_used];
+			const base_type window_next = scaled[position + divisor_used - 1];
+
+			// Estimate the digit from the window's top two limbs over the divisor's top limb.
+			base_type estimate = 0;
+			base_type estimate_remainder = 0;
+			bool remainder_fits = true;
+			if (window_top >= top)
+			{
+				// Only equality is possible here; the digit saturates at base - 1.
+				estimate = ~base_type{0};
+				estimate_remainder = window_next + top;
+				remainder_fits = estimate_remainder >= window_next;
+			}
+			else
+			{
+				estimate = long_uint_detail::divide_wide(window_top, window_next, top, estimate_remainder);
+			}
+
+			// The second divisor limb rules out most of the cases where the estimate is high.
+			while (remainder_fits)
+			{
+				const auto product = long_uint_detail::multiply_wide(estimate, next);
+				if (product.high < estimate_remainder ||
+					(product.high == estimate_remainder && product.low <= scaled[position + divisor_used - 2]))
+					break;
+				--estimate;
+				estimate_remainder += top;
+				remainder_fits = estimate_remainder >= top;
+			}
+
+			// scaled[position .. position + divisor_used] -= estimate * scaled_divisor
+			base_type multiply_carry = 0;
+			base_type borrow = 0;
+			for (size_type index = 0; index < divisor_used; ++index)
+			{
+				const auto product = long_uint_detail::multiply_wide(estimate, scaled_divisor[index]);
+				const base_type subtrahend = product.low + multiply_carry;
+				multiply_carry = product.high + (subtrahend < product.low);
+				const base_type first = scaled[position + index] - subtrahend;
+				const base_type first_borrow = scaled[position + index] < subtrahend;
+				scaled[position + index] = first - borrow;
+				borrow = first_borrow | (first < borrow);
+			}
+			const base_type top_first = scaled[position + divisor_used] - multiply_carry;
+			const base_type top_first_borrow = scaled[position + divisor_used] < multiply_carry;
+			scaled[position + divisor_used] = top_first - borrow;
+			const bool went_negative = (top_first_borrow | (top_first < borrow)) != 0;
+
+			if (went_negative)
+			{
+				// The estimate was still one too high; add the divisor back.
+				--estimate;
+				base_type add_carry = 0;
+				for (size_type index = 0; index < divisor_used; ++index)
+				{
+					const base_type first = scaled[position + index] + scaled_divisor[index];
+					const base_type first_carry = first < scaled[position + index];
+					const base_type sum = first + add_carry;
+					scaled[position + index] = sum;
+					add_carry = first_carry | (sum < first);
+				}
+				scaled[position + divisor_used] += add_carry;
+			}
+			quotient[position] = estimate;
+		}
+
+		self_type remainder;
+		for (size_type index = 0; index < divisor_used; ++index)
+			remainder[index] = long_uint_detail::funnel_shift_right(scaled[index + 1], scaled[index], shift);
 		return {quotient, remainder};
 	}
 
