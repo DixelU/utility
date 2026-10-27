@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // The low-level SHA256_CTX / RIPEMD160 API is deprecated, but unlike the one-shot SHA256() (which
@@ -435,6 +436,13 @@ public:
 		return std::ranges::binary_search(sorted_, h);
 	}
 
+	// Starts loading the bitmap word that contains(h) will read.
+	void prefetch(const hash160& h) const
+	{
+		assert(!bitmap_.empty());
+		__builtin_prefetch(&bitmap_[slot_of(h) / 64]);
+	}
+
 private:
 	[[nodiscard]] std::uint64_t slot_of(const hash160& h) const { return load_be64(h.data()) >> shift_; }
 
@@ -468,31 +476,111 @@ struct address_targets
 
 	[[nodiscard]] bool empty() const { return base58.empty() && bech32.empty(); }
 
-	// pub uses the configured legacy compression, or is compressed for Bech32-only searches.
-	[[nodiscard]] std::optional<address_format> match(const std::span<const std::uint8_t> pub) const
+	// The hashes of one public key that the target lists need; the others stay zero.
+	struct key_hashes
 	{
-		hash160 h [[indeterminate]];
+		hash160 base58, bech32;
+	};
 
+	// pub uses the configured legacy compression, or is compressed for Bech32-only searches.
+	[[nodiscard]] key_hashes hash(const std::span<const std::uint8_t> pub) const
+	{
+		key_hashes hashes{};
 		if (!base58.empty())
-		{
-			h = hash160_of(pub);
-			if (base58.contains(h))
-				return address_format::base58;
-		}
+			hashes.base58 = hash160_of(pub);
 
 		if (!bech32.empty())
 		{
+			// A compressed key already hashed for Base58 has the Bech32 hash too.
 			std::array<std::uint8_t, 33> storage [[indeterminate]];
-
-			if (base58.empty() || pub.size() != 33)
-				h = hash160_of(compressed_public_key(pub, storage));
-
-			if (bech32.contains(h))
-				return address_format::bech32;
+			hashes.bech32 = !base58.empty() && pub.size() == 33
+				? hashes.base58
+				: hash160_of(compressed_public_key(pub, storage));
 		}
 
+		return hashes;
+	}
+
+	void prefetch(const key_hashes& hashes) const
+	{
+		if (!base58.empty())
+			base58.prefetch(hashes.base58);
+		if (!bech32.empty())
+			bech32.prefetch(hashes.bech32);
+	}
+
+	[[nodiscard]] std::optional<address_format> lookup(const key_hashes& hashes) const
+	{
+		if (!base58.empty() && base58.contains(hashes.base58))
+			return address_format::base58;
+		if (!bech32.empty() && bech32.contains(hashes.bech32))
+			return address_format::bech32;
 		return std::nullopt;
 	}
+
+	[[nodiscard]] std::optional<address_format> match(const std::span<const std::uint8_t> pub) const
+	{
+		return lookup(hash(pub));
+	}
+};
+
+struct target_hit
+{
+	std::uint64_t index;
+	address_format format;
+	std::vector<std::uint8_t> public_key; // the encoding the address was derived from
+};
+
+// Looks each key up one key late. Its bitmap words are prefetched as soon as it is hashed and
+// read only once the next key has been derived and hashed, so with a target list too big for
+// the cache the memory access overlaps that work instead of stalling it.
+class delayed_matcher
+{
+public:
+	explicit delayed_matcher(const address_targets& targets) : targets_{targets} {}
+
+	// Takes the public key of key index; returns the previous key, if that one matched.
+	[[nodiscard]] std::optional<target_hit> push(const std::uint64_t index, const std::span<const std::uint8_t> pub)
+	{
+		const address_targets::key_hashes hashes = targets_.hash(pub);
+		targets_.prefetch(hashes);
+
+		std::optional<target_hit> hit = flush();
+
+		pending_ = true;
+		pending_index_ = index;
+		pending_hashes_ = hashes;
+		pending_size_ = pub.size();
+		std::ranges::copy(pub, pending_pub_.begin());
+
+		return hit;
+	}
+
+	// Returns the last key pushed, if it matched.
+	[[nodiscard]] std::optional<target_hit> flush()
+	{
+		if (!std::exchange(pending_, false))
+			return std::nullopt;
+
+		const auto format = targets_.lookup(pending_hashes_);
+		if (!format) [[likely]]
+			return std::nullopt;
+
+		std::array<std::uint8_t, 33> storage [[indeterminate]];
+		auto pub = std::span<const std::uint8_t>{pending_pub_}.first(pending_size_);
+		if (*format == address_format::bech32)
+			pub = compressed_public_key(pub, storage);
+
+		return target_hit{pending_index_, *format, {pub.begin(), pub.end()}};
+	}
+
+private:
+	const address_targets& targets_;
+	bool pending_ = false;
+	std::uint64_t pending_index_ = 0;
+	address_targets::key_hashes pending_hashes_{};
+	std::array<std::uint8_t, 65> pending_pub_{};
+	std::size_t pending_size_ = 0;
 };
 
 void write_candidate(
@@ -983,41 +1071,32 @@ int main(int argc, char** argv)
 	if (!targets.empty())
 	{
 		// Mode 1: search for specific addresses, stop at the first hit
-		std::uint64_t hit = 0;
-		std::vector<std::uint8_t> hit_public_key;
-		auto hit_format = address_format::base58;
+		delayed_matcher matcher{targets};
+		std::optional<target_hit> hit;
 
-		const bool found = walker.walk(first.get(), count,
-		[&](const std::uint64_t index, std::span<const std::uint8_t> pub)
+		walker.walk(first.get(), count,
+		[&](const std::uint64_t index, const std::span<const std::uint8_t> pub)
 		{
 			progress.tick(index);
-			const auto match = targets.match(pub);
-			if (!match) [[likely]]
-				return false;
-
-			hit = index;
-			hit_format = *match;
-			std::array<std::uint8_t, 33> storage [[indeterminate]];
-
-			if (hit_format == address_format::bech32)
-				pub = compressed_public_key(pub, storage);
-			hit_public_key.assign(pub.begin(), pub.end());
-
-			return true;
+			hit = matcher.push(index, pub);
+			return hit.has_value();
 		});
 
-		if (found)
+		if (!hit)
+			hit = matcher.flush();
+
+		if (hit)
 		{
 			std::array<std::uint8_t, 32> private_key = base_bytes;
-			store_be64(private_key.data() + 24, load_be64(private_key.data() + 24) | (first_offset + hit));
+			store_be64(private_key.data() + 24, load_be64(private_key.data() + 24) | (first_offset + hit->index));
 
+			const hash160 h = hash160_of(hit->public_key);
 			std::cout << "\n=== FOUND MATCH ===\n"
 				<< "Private key (hex): " << to_hex(private_key) << "\n"
-				<< "Private key (WIF): " << private_to_wif(private_key, hit_public_key.size() == 33) << "\n"
-				<< "Public key:        " << to_hex(hit_public_key) << "\n"
-				<< "Address:           " << (hit_format == address_format::bech32
-					? hash160_to_bech32(hash160_of(hit_public_key)) :
-					  hash160_to_address(hash160_of(hit_public_key))) << "\n";
+				<< "Private key (WIF): " << private_to_wif(private_key, hit->public_key.size() == 33) << "\n"
+				<< "Public key:        " << to_hex(hit->public_key) << "\n"
+				<< "Address:           " << (hit->format == address_format::bech32
+					? hash160_to_bech32(h) : hash160_to_address(h)) << "\n";
 		}
 		else
 		{

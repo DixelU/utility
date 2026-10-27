@@ -317,6 +317,44 @@ void test_walker()
 	}
 }
 
+void test_delayed_matcher()
+{
+	// A Bech32 target in the middle of the walk and a legacy one on its very last key.
+	address_targets targets;
+	check(targets.add(hash160_to_bech32(hash160_of(reference_pubkey(19, true)))), "delayed Bech32 target");
+	check(targets.add(hash160_to_address(hash160_of(reference_pubkey(40, false)))), "delayed legacy target");
+	targets.build();
+
+	check(!delayed_matcher{targets}.flush(), "nothing pushed, nothing matched");
+
+	key_walker walker{8, false};
+	bn_ptr first = new_bn();
+	check(BN_one(first.get()), "set delayed search start");
+
+	delayed_matcher matcher{targets};
+	std::vector<target_hit> hits;
+	std::uint64_t pushed = 0;
+	walker.walk(first.get(), 40, [&](std::uint64_t index, std::span<const std::uint8_t> pub)
+		{
+			if (auto hit = matcher.push(index, pub))
+			{
+				check(index == hit->index + 1, "a hit is reported one key late");
+				hits.push_back(std::move(*hit));
+			}
+			++pushed;
+			return false;
+		});
+	if (auto hit = matcher.flush())
+		hits.push_back(std::move(*hit));
+
+	check(pushed == 40 && hits.size() == 2, "delayed matcher finds both targets");
+	check(hits[0].index == 18 && hits[0].format == address_format::bech32
+		&& hits[0].public_key == reference_pubkey(19, true), "Bech32 hit reports its key and compressed public key");
+	check(hits[1].index == 39 && hits[1].format == address_format::base58
+		&& hits[1].public_key == reference_pubkey(40, false), "the last key is matched by flush");
+	check(!matcher.flush(), "flush clears the pending key");
+}
+
 } // namespace
 
 int main()
@@ -326,5 +364,6 @@ int main()
 	test_addresses();
 	test_targets_and_output();
 	test_walker();
+	test_delayed_matcher();
 	std::cout << "PASS: " << checks << " checks\n";
 }
