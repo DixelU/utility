@@ -354,19 +354,31 @@ public:
 		return *this;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator|(self_type lhs, const self_type& rhs) noexcept
+	// The binary operators build their result where it is returned. Returning `lhs op= rhs`
+	// instead copies a value that was just stored limb by limb, and the compiler copies all
+	// of it with one wide load that cannot be forwarded from those stores: a stall.
+	[[nodiscard]] friend constexpr self_type operator|(const self_type& lhs, const self_type& rhs) noexcept
 	{
-		return lhs |= rhs;
+		self_type result;
+		for (size_type index = 0; index < size; ++index)
+			result[index] = lhs[index] | rhs[index];
+		return result;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator&(self_type lhs, const self_type& rhs) noexcept
+	[[nodiscard]] friend constexpr self_type operator&(const self_type& lhs, const self_type& rhs) noexcept
 	{
-		return lhs &= rhs;
+		self_type result;
+		for (size_type index = 0; index < size; ++index)
+			result[index] = lhs[index] & rhs[index];
+		return result;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator^(self_type lhs, const self_type& rhs) noexcept
+	[[nodiscard]] friend constexpr self_type operator^(const self_type& lhs, const self_type& rhs) noexcept
 	{
-		return lhs ^= rhs;
+		self_type result;
+		for (size_type index = 0; index < size; ++index)
+			result[index] = lhs[index] ^ rhs[index];
+		return result;
 	}
 
 	// lhs + rhs + carry modulo 2^bits, and whether the exact sum reached 2^bits.
@@ -403,8 +415,6 @@ public:
 		return *this;
 	}
 
-	// These build the result where it is returned. Returning `lhs -= rhs` instead copies a
-	// value that was just stored limb by limb, which costs a store-forwarding stall.
 	[[nodiscard]] friend constexpr self_type operator+(const self_type& lhs, const self_type& rhs) noexcept
 	{
 		self_type sum;
@@ -450,62 +460,28 @@ public:
 
 	constexpr self_type& operator<<=(size_type shift) noexcept
 	{
-		if (shift >= bits)
-		{
-			limbs_.fill(0);
-			return *this;
-		}
-		if (shift == 0)
-			return *this;
-
-		const size_type limb_shift = shift / base_bits;
-		const size_type bit_shift = shift % base_bits;
-		std::array<base_type, size> shifted{};
-		for (size_type source = 0; source < size; ++source)
-		{
-			const size_type destination = source + limb_shift;
-			if (destination >= size)
-				break;
-			shifted[destination] |= limbs_[source] << bit_shift;
-			if (bit_shift != 0 && destination + 1 < size)
-				shifted[destination + 1] |= limbs_[source] >> (base_bits - bit_shift);
-		}
-		limbs_ = shifted;
+		shift_left(*this, *this, shift);
 		return *this;
 	}
 
 	constexpr self_type& operator>>=(size_type shift) noexcept
 	{
-		if (shift >= bits)
-		{
-			limbs_.fill(0);
-			return *this;
-		}
-		if (shift == 0)
-			return *this;
-
-		const size_type limb_shift = shift / base_bits;
-		const size_type bit_shift = shift % base_bits;
-		std::array<base_type, size> shifted{};
-		for (size_type source = limb_shift; source < size; ++source)
-		{
-			const size_type destination = source - limb_shift;
-			shifted[destination] |= limbs_[source] >> bit_shift;
-			if (bit_shift != 0 && source + 1 < size)
-				shifted[destination] |= limbs_[source + 1] << (base_bits - bit_shift);
-		}
-		limbs_ = shifted;
+		shift_right(*this, *this, shift);
 		return *this;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator<<(self_type value, size_type shift) noexcept
+	[[nodiscard]] friend constexpr self_type operator<<(const self_type& value, size_type shift) noexcept
 	{
-		return value <<= shift;
+		self_type result;
+		shift_left(result, value, shift);
+		return result;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator>>(self_type value, size_type shift) noexcept
+	[[nodiscard]] friend constexpr self_type operator>>(const self_type& value, size_type shift) noexcept
 	{
-		return value >>= shift;
+		self_type result;
+		shift_right(result, value, shift);
+		return result;
 	}
 
 	[[nodiscard]] constexpr self_type operator*(const self_type& rhs) const noexcept
@@ -874,6 +850,36 @@ private:
 		for (size_type index = 0; index < size; ++index)
 			result[index] = long_uint_detail::subtract_with_borrow(lhs[index], rhs[index], borrow);
 		return borrow;
+	}
+
+	// result = value << shift, zero once shift reaches bits. result may be value itself:
+	// limbs are written from the top down, each after the lower limbs it is made from are read.
+	// The loop runs over every limb, so it unrolls even when the shift is only known at run time.
+	static constexpr void shift_left(self_type& result, const self_type& value, size_type shift) noexcept
+	{
+		const size_type limb_shift = shift < bits ? shift / base_bits : size;
+		const auto bit_shift = static_cast<unsigned>(shift % base_bits);
+		for (size_type index = size; index-- > 0;)
+		{
+			const base_type high = index >= limb_shift ? value[index - limb_shift] : 0;
+			const base_type low = index > limb_shift ? value[index - limb_shift - 1] : 0;
+			result[index] = long_uint_detail::funnel_shift_left(high, low, bit_shift);
+		}
+	}
+
+	// result = value >> shift, zero once shift reaches bits. result may be value itself:
+	// limbs are written from the bottom up, each after the higher limbs it is made from are read.
+	static constexpr void shift_right(self_type& result, const self_type& value, size_type shift) noexcept
+	{
+		const size_type limb_shift = shift < bits ? shift / base_bits : size;
+		const auto bit_shift = static_cast<unsigned>(shift % base_bits);
+		for (size_type index = 0; index < size; ++index)
+		{
+			const size_type source = index + limb_shift;
+			const base_type low = source < size ? value[source] : 0;
+			const base_type high = source + 1 < size ? value[source + 1] : 0;
+			result[index] = long_uint_detail::funnel_shift_right(high, low, bit_shift);
+		}
 	}
 
 	[[nodiscard]] static constexpr self_type divmod_small(

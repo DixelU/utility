@@ -157,7 +157,30 @@ void test_long_uint_degree(std::mt19937_64& random, std::size_t iterations)
 				: lhs_reference >> shift;
 			require(to_reference(lhs << shift) == expected_left, "long_uint left shift mismatch");
 			require(to_reference(lhs >> shift) == expected_right, "long_uint right shift mismatch");
+
+			// The compound forms shift in place, reading limbs that are about to be overwritten.
+			value_type shifted_left = lhs;
+			shifted_left <<= shift;
+			value_type shifted_right = lhs;
+			shifted_right >>= shift;
+			require(to_reference(shifted_left) == expected_left, "long_uint in-place left shift mismatch");
+			require(to_reference(shifted_right) == expected_right, "long_uint in-place right shift mismatch");
 		}
+
+		value_type in_place = lhs;
+		in_place |= rhs;
+		require(in_place == (lhs | rhs), "long_uint |= mismatch");
+		in_place = lhs;
+		in_place &= rhs;
+		require(in_place == (lhs & rhs), "long_uint &= mismatch");
+		in_place = lhs;
+		in_place ^= rhs;
+		require(in_place == (lhs ^ rhs), "long_uint ^= mismatch");
+		in_place = lhs;
+		in_place += in_place;
+		require(to_reference(in_place) == ((lhs_reference * 2) & mask), "long_uint self-addition mismatch");
+		in_place -= in_place;
+		require(!in_place, "long_uint self-subtraction must give zero");
 
 		const std::size_t expected_leading = lhs_reference == 0
 			? value_type::bits
@@ -493,6 +516,13 @@ void test_long_uint()
 		make_wider(~0ULL, ~0ULL, ~0ULL, ~0ULL), make_wider(~0ULL, ~0ULL, 1, 0)));
 	static_assert(constexpr_divmod_consistent(
 		make_wider(123, 456, 789, 1011), make_wider(1, 2, 3, 4)));
+
+	static_assert((make_wide(1, 0) << 64) == make_wide(0, 1));
+	static_assert((make_wide(0x8000000000000001ULL, 0) << 1) == make_wide(2, 1));
+	static_assert((make_wide(0, 0x8000000000000000ULL) >> 127) == make_wide(1, 0));
+	static_assert((make_wide(~0ULL, ~0ULL) >> 128) == make_wide(0, 0));
+	static_assert([make_wider] { auto value = make_wider(1, 2, 3, 4); value <<= 72; value >>= 8; return value; }()
+		== make_wider(0, 1, 2, 3));
 
 	// Constant evaluation takes the portable carry and multiply-add paths as well.
 	static_assert(dixelu::long_uint<0>::multiply_wide(make_wide(~0ULL, ~0ULL), make_wide(~0ULL, ~0ULL))
