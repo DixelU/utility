@@ -48,8 +48,9 @@ implementation and Python worker launchers remain separate from this executable.
 
 ## Build and test
 
-Requires CMake 4.3+, a C++23 compiler, and OpenSSL 3 Crypto. For an already
-configured build directory:
+Requires CMake 4.3+, a C++23 compiler with `unsigned __int128` (GCC or Clang),
+OpenSSL 3 Crypto, and `include/long_uint.h` from the enclosing repository. For
+an already configured build directory:
 
 ```powershell
 cmake --build cmake-build-release
@@ -61,7 +62,8 @@ For a new directory, configure with `cmake -S . -B build` first; set
 must be on `PATH` or beside the executable. Tests are enabled by default;
 `-DBUILD_TESTING=OFF` omits the test executable.
 
-Tests cover the [BIP173](https://bips.dev/173/) P2WPKH vector, invalid and
+Tests cover secp256k1 field arithmetic against OpenSSL, the
+[BIP173](https://bips.dev/173/) P2WPKH vector, invalid and
 unsupported address forms including [BIP350](https://bips.dev/350/) cases,
 Base58/WIF regression vectors, mixed target matching, both dump formats,
 and key-walker output against OpenSSL scalar multiplication.

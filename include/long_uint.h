@@ -73,6 +73,75 @@ constexpr wide_product multiply_wide(std::uint64_t lhs, std::uint64_t rhs) noexc
 #endif
 }
 
+// lhs * rhs + addend + carry, which always fits in 128 bits.
+constexpr wide_product multiply_add(
+	std::uint64_t lhs,
+	std::uint64_t rhs,
+	std::uint64_t addend,
+	std::uint64_t carry) noexcept
+{
+#if defined(__SIZEOF_INT128__) && !defined(__wasm__)
+	if !consteval
+	{
+		const __uint128_t result = static_cast<__uint128_t>(lhs) * rhs + addend + carry;
+		return {
+			static_cast<std::uint64_t>(result),
+			static_cast<std::uint64_t>(result >> 64)};
+	}
+#endif
+
+	const wide_product product = multiply_wide(lhs, rhs);
+	const std::uint64_t with_addend = product.low + addend;
+	const std::uint64_t with_carry = with_addend + carry;
+	// The true result fits, so the high limb cannot overflow.
+	return {
+		with_carry,
+		product.high + (with_addend < addend) + (with_carry < carry)};
+}
+
+// lhs + rhs + carry for a carry of 0 or 1; carry receives the carry out.
+constexpr std::uint64_t add_with_carry(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& carry) noexcept
+{
+#ifdef __has_builtin
+#if __has_builtin(__builtin_addcll)
+	// Compiles to an add-with-carry chain, which the portable form below does not always.
+	if !consteval
+	{
+		unsigned long long carry_out = 0;
+		const std::uint64_t sum = __builtin_addcll(lhs, rhs, carry, &carry_out);
+		carry = carry_out;
+		return sum;
+	}
+#endif
+#endif
+
+	const std::uint64_t first = lhs + rhs;
+	const std::uint64_t sum = first + carry;
+	carry = (first < lhs) | (sum < first);
+	return sum;
+}
+
+// lhs - rhs - borrow for a borrow of 0 or 1; borrow receives the borrow out.
+constexpr std::uint64_t subtract_with_borrow(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t& borrow) noexcept
+{
+#ifdef __has_builtin
+#if __has_builtin(__builtin_subcll)
+	if !consteval
+	{
+		unsigned long long borrow_out = 0;
+		const std::uint64_t difference = __builtin_subcll(lhs, rhs, borrow, &borrow_out);
+		borrow = borrow_out;
+		return difference;
+	}
+#endif
+#endif
+
+	const std::uint64_t first = lhs - rhs;
+	const std::uint64_t difference = first - borrow;
+	borrow = (lhs < rhs) | (first < borrow);
+	return difference;
+}
+
 // Divides the 128-bit value (high:low) by a nonzero divisor and returns the
 // 64-bit quotient. Requires high < divisor so that the quotient fits: Knuth's
 // algorithm D reduced to two 32-bit digits.
@@ -300,44 +369,54 @@ public:
 		return lhs ^= rhs;
 	}
 
+	// lhs + rhs + carry modulo 2^bits, and whether the exact sum reached 2^bits.
+	[[nodiscard]] static constexpr std::pair<self_type, bool> add_with_carry(
+		const self_type& lhs,
+		const self_type& rhs,
+		bool carry = false) noexcept
+	{
+		std::pair<self_type, bool> result;
+		result.second = add_limbs(result.first, lhs, rhs, carry) != 0;
+		return result;
+	}
+
+	// lhs - rhs - borrow modulo 2^bits, and whether the exact difference was negative.
+	[[nodiscard]] static constexpr std::pair<self_type, bool> subtract_with_borrow(
+		const self_type& lhs,
+		const self_type& rhs,
+		bool borrow = false) noexcept
+	{
+		std::pair<self_type, bool> result;
+		result.second = subtract_limbs(result.first, lhs, rhs, borrow) != 0;
+		return result;
+	}
+
 	constexpr self_type& operator+=(const self_type& rhs) noexcept
 	{
-		base_type carry = 0;
-		for (size_type index = 0; index < size; ++index)
-		{
-			const base_type first = limbs_[index] + rhs[index];
-			const base_type first_carry = first < limbs_[index];
-			const base_type sum = first + carry;
-			const base_type second_carry = sum < first;
-			limbs_[index] = sum;
-			carry = first_carry | second_carry;
-		}
+		add_limbs(*this, *this, rhs, 0);
 		return *this;
 	}
 
 	constexpr self_type& operator-=(const self_type& rhs) noexcept
 	{
-		base_type borrow = 0;
-		for (size_type index = 0; index < size; ++index)
-		{
-			const base_type first = limbs_[index] - rhs[index];
-			const base_type first_borrow = limbs_[index] < rhs[index];
-			const base_type difference = first - borrow;
-			const base_type second_borrow = first < borrow;
-			limbs_[index] = difference;
-			borrow = first_borrow | second_borrow;
-		}
+		subtract_limbs(*this, *this, rhs, 0);
 		return *this;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator+(self_type lhs, const self_type& rhs) noexcept
+	// These build the result where it is returned. Returning `lhs -= rhs` instead copies a
+	// value that was just stored limb by limb, which costs a store-forwarding stall.
+	[[nodiscard]] friend constexpr self_type operator+(const self_type& lhs, const self_type& rhs) noexcept
 	{
-		return lhs += rhs;
+		self_type sum;
+		add_limbs(sum, lhs, rhs, 0);
+		return sum;
 	}
 
-	[[nodiscard]] friend constexpr self_type operator-(self_type lhs, const self_type& rhs) noexcept
+	[[nodiscard]] friend constexpr self_type operator-(const self_type& lhs, const self_type& rhs) noexcept
 	{
-		return lhs -= rhs;
+		self_type difference;
+		subtract_limbs(difference, lhs, rhs, 0);
+		return difference;
 	}
 
 	constexpr self_type& operator++() noexcept
@@ -440,15 +519,11 @@ public:
 			size_type rhs_index = 0;
 			for (; rhs_index < rhs_used && lhs_index + rhs_index < size; ++rhs_index)
 			{
-				const auto product = long_uint_detail::multiply_wide(
-					limbs_[lhs_index], rhs[rhs_index]);
 				base_type& destination = result[lhs_index + rhs_index];
-				const base_type with_destination = product.low + destination;
-				const base_type destination_carry = with_destination < product.low;
-				const base_type with_carry = with_destination + carry;
-				const base_type addition_carry = with_carry < with_destination;
-				destination = with_carry;
-				carry = product.high + destination_carry + addition_carry;
+				const auto product = long_uint_detail::multiply_add(
+					limbs_[lhs_index], rhs[rhs_index], destination, carry);
+				destination = product.low;
+				carry = product.high;
 			}
 			// Nothing has been accumulated this far up yet, so the carry is stored, not added.
 			if (lhs_index + rhs_index < size)
@@ -460,6 +535,28 @@ public:
 	constexpr self_type& operator*=(const self_type& rhs) noexcept
 	{
 		return *this = *this * rhs;
+	}
+
+	// The full product, twice as wide as the operands; unlike operator*, nothing wraps.
+	// The loops run over every limb, so for a fixed width they unroll completely.
+	[[nodiscard]] static constexpr long_uint<Degree + 1> multiply_wide(
+		const self_type& lhs,
+		const self_type& rhs) noexcept
+	{
+		long_uint<Degree + 1> product;
+		for (size_type lhs_index = 0; lhs_index < size; ++lhs_index)
+		{
+			base_type carry = 0;
+			for (size_type rhs_index = 0; rhs_index < size; ++rhs_index)
+			{
+				const auto partial = long_uint_detail::multiply_add(
+					lhs[lhs_index], rhs[rhs_index], product[lhs_index + rhs_index], carry);
+				product[lhs_index + rhs_index] = partial.low;
+				carry = partial.high;
+			}
+			product[lhs_index + size] = carry;
+		}
+		return product;
 	}
 
 	[[nodiscard]] static constexpr std::pair<self_type, self_type> divmod(
@@ -755,6 +852,30 @@ public:
 	}
 
 private:
+	// result = lhs + rhs + carry; returns the carry out. result may be either operand.
+	static constexpr base_type add_limbs(
+		self_type& result,
+		const self_type& lhs,
+		const self_type& rhs,
+		base_type carry) noexcept
+	{
+		for (size_type index = 0; index < size; ++index)
+			result[index] = long_uint_detail::add_with_carry(lhs[index], rhs[index], carry);
+		return carry;
+	}
+
+	// result = lhs - rhs - borrow; returns the borrow out. result may be either operand.
+	static constexpr base_type subtract_limbs(
+		self_type& result,
+		const self_type& lhs,
+		const self_type& rhs,
+		base_type borrow) noexcept
+	{
+		for (size_type index = 0; index < size; ++index)
+			result[index] = long_uint_detail::subtract_with_borrow(lhs[index], rhs[index], borrow);
+		return borrow;
+	}
+
 	[[nodiscard]] static constexpr self_type divmod_small(
 		const self_type& dividend,
 		base_type divisor,

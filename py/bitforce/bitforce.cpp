@@ -24,6 +24,8 @@
 #include <openssl/ripemd.h>
 #include <openssl/sha.h>
 
+#include "long_uint.h"
+
 namespace
 {
 
@@ -78,7 +80,6 @@ struct ossl_deleter
 
 using bn_ptr = std::unique_ptr<BIGNUM, ossl_deleter<BN_free>>;
 using bn_ctx_ptr = std::unique_ptr<BN_CTX, ossl_deleter<BN_CTX_free>>;
-using bn_mont_ptr = std::unique_ptr<BN_MONT_CTX, ossl_deleter<BN_MONT_CTX_free>>;
 using ec_group_ptr = std::unique_ptr<EC_GROUP, ossl_deleter<EC_GROUP_free>>;
 using ec_point_ptr = std::unique_ptr<EC_POINT, ossl_deleter<EC_POINT_free>>;
 
@@ -132,10 +133,10 @@ using hash160 = std::array<std::uint8_t, RIPEMD160_DIGEST_LENGTH>;
 
 sha256_digest sha256(const std::span<const std::uint8_t> data)
 {
-	SHA256_CTX ctx;
+	SHA256_CTX ctx [[indeterminate]];
 	SHA256_Init(&ctx);
 	SHA256_Update(&ctx, data.data(), data.size());
-	sha256_digest out;
+	sha256_digest out [[indeterminate]];
 	SHA256_Final(out.data(), &ctx);
 	return out;
 }
@@ -143,7 +144,7 @@ sha256_digest sha256(const std::span<const std::uint8_t> data)
 hash160 hash160_of(const std::span<const std::uint8_t> data)
 {
 	const sha256_digest sha = sha256(data);
-	hash160 out;
+	hash160 out [[indeterminate]];
 	RIPEMD160(sha.data(), sha.size(), out.data());
 	return out;
 }
@@ -208,7 +209,7 @@ std::size_t hash160_to_address(const hash160& h, char* out)
 
 std::string hash160_to_address(const hash160& h)
 {
-	char out[34] [[indeterminate]];
+	char out [[indeterminate]] [34];
 	return {out, hash160_to_address(h, out)};
 }
 
@@ -254,7 +255,7 @@ std::string private_to_wif(std::span<const std::uint8_t, 32> private_key, const 
 	std::ranges::copy(private_key, payload.begin() + 1);
 	payload[33] = 0x01;
 
-	char out[52] [[indeterminate]];
+	char out [[indeterminate]] [52];
 	return {out, base58check_encode({payload.data(), compressed ? 34u : 33u}, out)};
 }
 
@@ -326,7 +327,7 @@ std::size_t hash160_to_bech32(const hash160& h, char* out)
 
 std::string hash160_to_bech32(const hash160& h)
 {
-	char out[42];
+	char out [[indeterminate]] [42];
 	return {out, hash160_to_bech32(h, out)};
 }
 
@@ -425,7 +426,7 @@ struct address_targets
 	// pub uses the configured legacy compression, or is compressed for Bech32-only searches.
 	[[nodiscard]] std::optional<address_format> match(const std::span<const std::uint8_t> pub) const
 	{
-		hash160 h;
+		hash160 h [[indeterminate]];
 
 		if (!base58.empty())
 		{
@@ -479,7 +480,7 @@ void dump_candidate(
 	const std::span<const std::uint8_t> public_key,
 	const std::span<const std::uint8_t, 32> private_key)
 {
-	hash160 h;
+	hash160 h [[indeterminate]];
 	if (format != address_format::bech32)
 	{
 		h = hash160_of(public_key);
@@ -499,14 +500,126 @@ void dump_candidate(
 }
 
 // ---------------------------------------------------------------------------
+// secp256k1 base field, p = 2^256 - 2^32 - 977
+//
+// Elements are canonical (< p) 256-bit integers. Because 2^256 ≡ 2^32 + 977
+// (mod p), a 512-bit product reduces by folding its top half back in times
+// that small constant: cheaper than Montgomery reduction, and elements stay in
+// plain form, so serializing a point is just a byte swap.
+// ---------------------------------------------------------------------------
+namespace field
+{
+
+using u256 = dixelu::long_uint<1>;
+using u512 = dixelu::long_uint<2>;
+using u128 = unsigned __int128;
+
+constexpr std::uint64_t fold = 0x1000003D1; // 2^256 mod p
+constexpr u256 p = ~u256{} - u256{fold - 1};
+
+u256 reduce(const u512& t)
+{
+	u256 r;
+	u128 acc = 0;
+	for (int i = 0; i < 4; ++i)
+	{
+		acc += static_cast<u128>(t[i + 4]) * fold + t[i];
+		r[i] = static_cast<std::uint64_t>(acc);
+		acc >>= 64;
+	}
+
+	// Two more passes fold in what overflowed 2^256: first under 2^34, then 0 or 1. If the
+	// first pass carries out, it leaves r below 2^68, so the second cannot carry again.
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		acc *= fold;
+		for (int i = 0; i < 4; ++i)
+		{
+			acc += r[i];
+			r[i] = static_cast<std::uint64_t>(acc);
+			acc >>= 64;
+		}
+	}
+
+	if (r >= p) [[unlikely]]
+		r += u256{fold}; // r - p, modulo 2^256
+	return r;
+}
+
+u256 mul(const u256& a, const u256& b)
+{
+	return reduce(u256::multiply_wide(a, b));
+}
+
+u256 sqr_n(u256 a, const int n)
+{
+	for (int i = 0; i < n; ++i)
+		a = mul(a, a);
+	return a;
+}
+
+u256 sub(const u256& a, const u256& b)
+{
+	// On a borrow the difference is a - b + 2^256; taking off fold as well leaves a - b + p.
+	const auto [difference, borrow] = u256::subtract_with_borrow(a, b);
+	return difference - u256{borrow ? fold : 0};
+}
+
+// a^(p - 2) for a != 0. p - 2 is, from the top, 223 ones, a zero, 22 ones, 0000, 1, 0, 11, 0, 1;
+// this addition chain (from libsecp256k1) builds those runs of ones: 255 squarings, 15 multiplications.
+u256 invert(const u256& a)
+{
+	const u256 x2 = mul(sqr_n(a, 1), a);
+	const u256 x3 = mul(sqr_n(x2, 1), a);
+	const u256 x6 = mul(sqr_n(x3, 3), x3);
+	const u256 x9 = mul(sqr_n(x6, 3), x3);
+	const u256 x11 = mul(sqr_n(x9, 2), x2);
+	const u256 x22 = mul(sqr_n(x11, 11), x11);
+	const u256 x44 = mul(sqr_n(x22, 22), x22);
+	const u256 x88 = mul(sqr_n(x44, 44), x44);
+	const u256 x176 = mul(sqr_n(x88, 88), x88);
+	const u256 x220 = mul(sqr_n(x176, 44), x44);
+	const u256 x223 = mul(sqr_n(x220, 3), x3);
+
+	u256 t = mul(sqr_n(x223, 23), x22);
+	t = mul(sqr_n(t, 5), a);
+	t = mul(sqr_n(t, 3), x2);
+	return mul(sqr_n(t, 2), a);
+}
+
+u256 load(const std::uint8_t* in)
+{
+	u256 r;
+	for (int i = 0; i < 4; ++i)
+		r[3 - i] = load_be64(in + 8 * i);
+	return r;
+}
+
+void store(std::uint8_t* out, const u256& a)
+{
+	for (int i = 0; i < 4; ++i)
+		store_be64(out + 8 * i, a[3 - i]);
+}
+
+u256 from_bn(const BIGNUM* bn)
+{
+	std::array<std::uint8_t, 32> bytes [[indeterminate]];
+	if (BN_bn2binpad(bn, bytes.data(), 32) != 32)
+		die("BIGNUM does not fit in 256 bits");
+	return load(bytes.data());
+}
+
+} // namespace field
+
+// ---------------------------------------------------------------------------
 // secp256k1 key walker
 //
 // Visits the public keys of first, first + 1, ... in order. Rather than one
 // scalar multiplication per key, each batch adds the precomputed points
 // 1·G .. B·G to the current point S in affine coordinates, sharing a single
 // field inversion across the whole batch (Montgomery's trick); S then moves
-// on by B·G. Every BIGNUM is allocated up front, so nothing in the walk
-// allocates per key.
+// on by B·G. OpenSSL is only used to set up the table and S; the walk itself
+// runs on plain field elements and never allocates.
 // ---------------------------------------------------------------------------
 class key_walker
 {
@@ -521,53 +634,38 @@ public:
 	bool walk(const BIGNUM* first, std::uint64_t count, Visitor&& visit);
 
 private:
-	struct affine_point // coordinates in Montgomery form
+	struct affine_point
 	{
-		bn_ptr x = new_bn();
-		bn_ptr y = new_bn();
+		field::u256 x, y;
 	};
 
-	int mul(BIGNUM* r, const BIGNUM* a, const BIGNUM* b) const
-	{
-		return BN_mod_mul_montgomery(r, a, b, mont_.get(), ctx_.get());
-	}
-
-	int sub(BIGNUM* r, const BIGNUM* a, const BIGNUM* b) const
-	{
-		return BN_mod_sub_quick(r, a, b, p_.get());
-	}
-
-	int invert(BIGNUM* r, const BIGNUM* a) const;
-	void load(const affine_point& dst, const EC_POINT* src) const;
+	void load(affine_point& dst, const EC_POINT* src) const;
 	std::span<const std::uint8_t> serialize(const affine_point& point);
 
 	ec_group_ptr group_;
 	bn_ctx_ptr ctx_;
-	bn_mont_ptr mont_;
-	bn_ptr p_ = new_bn();
 	bool compressed_;
 
 	std::vector<affine_point> table_; // table_[i] = (i + 1)·G
-	std::vector<bn_ptr> dx_;          // x(T[i]) - x(S), then its inverse
-	std::vector<bn_ptr> prefix_;      // dx_[0] · … · dx_[i]
+	std::vector<field::u256> dx_;     // x(T[i]) - x(S), then its inverse
+	std::vector<field::u256> prefix_; // dx_[0] · … · dx_[i]
 	affine_point s_, r_;
-	bn_ptr inv_ = new_bn(), tmp_ = new_bn(), lambda_ = new_bn();
-	bn_ptr plain_x_ = new_bn(), plain_y_ = new_bn();
 	std::array<std::uint8_t, 65> pub_;
 };
 
 key_walker::key_walker(const std::size_t batch, const bool compressed)
 	: group_{EC_GROUP_new_by_curve_name(NID_secp256k1)}
 	, ctx_{BN_CTX_new()}
-	, mont_{BN_MONT_CTX_new()}
 	, compressed_{compressed}
 	, table_(batch)
+	, dx_(batch)
+	, prefix_(batch)
 {
-	if (!group_ || !ctx_ || !mont_ || batch == 0)
+	if (!group_ || !ctx_ || batch == 0)
 		die("secp256k1 setup failed");
 
-	if (!EC_GROUP_get_curve(group_.get(), p_.get(), nullptr, nullptr, ctx_.get())
-		|| !BN_MONT_CTX_set(mont_.get(), p_.get(), ctx_.get()))
+	const bn_ptr p = new_bn();
+	if (!EC_GROUP_get_curve(group_.get(), p.get(), nullptr, nullptr, ctx_.get()) || field::from_bn(p.get()) != field::p)
 		die("secp256k1 field setup failed");
 
 	const EC_POINT* g = EC_GROUP_get0_generator(group_.get());
@@ -581,48 +679,28 @@ key_walker::key_walker(const std::size_t batch, const bool compressed)
 		if (!EC_POINT_add(group_.get(), point.get(), point.get(), g, ctx_.get()))
 			die("EC_POINT_add failed");
 	}
-
-	dx_.reserve(batch);
-	prefix_.reserve(batch);
-
-	for (std::size_t i = 0; i < batch; ++i)
-	{
-		dx_.push_back(new_bn());
-		prefix_.push_back(new_bn());
-	}
 }
 
-int key_walker::invert(BIGNUM* r, const BIGNUM* a) const
+void key_walker::load(affine_point& dst, const EC_POINT* src) const
 {
-	// (aR)⁻¹·R = to_mont(from_mont(aR)⁻¹)
-	return BN_from_montgomery(tmp_.get(), a, mont_.get(), ctx_.get())
-		&& BN_mod_inverse(r, tmp_.get(), p_.get(), ctx_.get())
-		&& BN_to_montgomery(r, r, mont_.get(), ctx_.get());
-}
-
-void key_walker::load(const affine_point& dst, const EC_POINT* src) const
-{
-	if (!EC_POINT_get_affine_coordinates(group_.get(), src, dst.x.get(), dst.y.get(), ctx_.get())
-		|| !BN_to_montgomery(dst.x.get(), dst.x.get(), mont_.get(), ctx_.get())
-		|| !BN_to_montgomery(dst.y.get(), dst.y.get(), mont_.get(), ctx_.get()))
+	const bn_ptr x = new_bn(), y = new_bn();
+	if (!EC_POINT_get_affine_coordinates(group_.get(), src, x.get(), y.get(), ctx_.get()))
 		die("loading an EC point failed");
+
+	dst = {field::from_bn(x.get()), field::from_bn(y.get())};
 }
 
 std::span<const std::uint8_t> key_walker::serialize(const affine_point& point)
 {
-	if (!BN_from_montgomery(plain_x_.get(), point.x.get(), mont_.get(), ctx_.get())
-		|| !BN_from_montgomery(plain_y_.get(), point.y.get(), mont_.get(), ctx_.get()))
-		die("BN_from_montgomery failed");
-
-	BN_bn2binpad(plain_x_.get(), pub_.data() + 1, 32);
+	field::store(pub_.data() + 1, point.x);
 	if (compressed_)
 	{
-		pub_[0] = BN_is_odd(plain_y_.get()) ? 0x03 : 0x02;
+		pub_[0] = point.y[0] & 1 ? 0x03 : 0x02;
 		return std::span{pub_}.first(33);
 	}
 
 	pub_[0] = 0x04;
-	BN_bn2binpad(plain_y_.get(), pub_.data() + 33, 32);
+	field::store(pub_.data() + 33, point.y);
 
 	return pub_;
 }
@@ -665,49 +743,39 @@ bool key_walker::walk(const BIGNUM* first, const std::uint64_t count, Visitor&& 
 	while (index < count)
 	{
 		const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(batch, count - index));
-		int ok = 1;
 
 		for (std::size_t i = 0; i < n; ++i)
 		{
-			ok &= sub(dx_[i].get(), table_[i].x.get(), s_.x.get());
-			ok &= i ? mul(prefix_[i].get(), prefix_[i - 1].get(), dx_[i].get())
-					: BN_copy(prefix_[0].get(), dx_[0].get()) != nullptr;
+			dx_[i] = field::sub(table_[i].x, s_.x);
+			prefix_[i] = i ? field::mul(prefix_[i - 1], dx_[i]) : dx_[0];
 		}
 
 		// Invert the product once, then peel off dx_[i]⁻¹ from the back.
-		ok &= invert(inv_.get(), prefix_[n - 1].get());
+		field::u256 inv = field::invert(prefix_[n - 1]);
 		for (std::size_t i = n - 1; i > 0; --i)
 		{
-			ok &= mul(tmp_.get(), inv_.get(), prefix_[i - 1].get()); // dx[i]⁻¹
-			ok &= mul(inv_.get(), inv_.get(), dx_[i].get());         // (dx[0] · … · dx[i - 1])⁻¹
-			BN_swap(dx_[i].get(), tmp_.get());
+			const field::u256 dx = dx_[i];
+			dx_[i] = field::mul(inv, prefix_[i - 1]); // dx[i]⁻¹
+			inv = field::mul(inv, dx);                // (dx[0] · … · dx[i - 1])⁻¹
 		}
 
-		BN_swap(dx_[0].get(), inv_.get());
+		dx_[0] = inv;
 
 		// R = S + T:  λ = (y_T - y_S) / (x_T - x_S),  x_R = λ² - x_S - x_T,  y_R = λ(x_S - x_R) - y_S
 		for (std::size_t i = 0; i < n; ++i)
 		{
 			const auto& [x, y] = table_[i];
 
-			ok &= sub(lambda_.get(), y.get(), s_.y.get());
-			ok &= mul(lambda_.get(), lambda_.get(), dx_[i].get());
-			ok &= mul(r_.x.get(), lambda_.get(), lambda_.get());
-			ok &= sub(r_.x.get(), r_.x.get(), s_.x.get());
-			ok &= sub(r_.x.get(), r_.x.get(), x.get());
-			ok &= sub(r_.y.get(), s_.x.get(), r_.x.get());
-			ok &= mul(r_.y.get(), r_.y.get(), lambda_.get());
-			ok &= sub(r_.y.get(), r_.y.get(), s_.y.get());
-
-			if (!ok)
-				die("field arithmetic failed");
+			const field::u256 lambda = field::mul(field::sub(y, s_.y), dx_[i]);
+			r_.x = field::sub(field::sub(field::mul(lambda, lambda), s_.x), x);
+			r_.y = field::sub(field::mul(field::sub(s_.x, r_.x), lambda), s_.y);
 
 			if (visit(index + i, serialize(r_)))
 				return true;
 		}
 
 		// The batch's last point starts the next one.
-		std::swap(s_, r_);
+		s_ = r_;
 		index += n;
 	}
 

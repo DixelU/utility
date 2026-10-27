@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Point OPENSSL_ROOT_DIR at the install if CMake can't find it, e.g. C:/vcpkg/installed/x64-windows
 find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 
+# long_uint.h from the enclosing repository.
+include_directories(../../include)
+
 add_executable(bitforce bitforce.cpp)
 target_link_libraries(bitforce PRIVATE OpenSSL::Crypto)
 

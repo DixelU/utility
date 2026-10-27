@@ -15,15 +15,14 @@ void check(const bool condition, const std::string_view message)
 		die("test failed: " + std::string{message});
 }
 
-std::vector<std::uint8_t> reference_pubkey(const unsigned key, const bool compressed)
+std::vector<std::uint8_t> reference_pubkey(const BIGNUM* key, const bool compressed)
 {
 	const ec_group_ptr group{EC_GROUP_new_by_curve_name(NID_secp256k1)};
 	const bn_ctx_ptr ctx{BN_CTX_new()};
-	const bn_ptr scalar = new_bn();
 	const ec_point_ptr point{EC_POINT_new(group.get())};
 
-	if (!group || !ctx || !point || !BN_set_word(scalar.get(), key)
-		|| !EC_POINT_mul(group.get(), point.get(), scalar.get(), nullptr, nullptr, ctx.get()))
+	if (!group || !ctx || !point
+		|| !EC_POINT_mul(group.get(), point.get(), key, nullptr, nullptr, ctx.get()))
 		die("reference key derivation failed");
 
 	std::vector<std::uint8_t> pub(compressed ? 33 : 65);
@@ -32,6 +31,65 @@ std::vector<std::uint8_t> reference_pubkey(const unsigned key, const bool compre
 		die("reference key serialization failed");
 
 	return pub;
+}
+
+std::vector<std::uint8_t> reference_pubkey(const unsigned key, const bool compressed)
+{
+	const bn_ptr scalar = new_bn();
+	if (!BN_set_word(scalar.get(), key))
+		die("BN_set_word failed");
+
+	return reference_pubkey(scalar.get(), compressed);
+}
+
+void test_field()
+{
+	const bn_ctx_ptr ctx{BN_CTX_new()};
+	const bn_ptr p = new_bn(), r = new_bn();
+	BIGNUM* raw = nullptr;
+	check(BN_hex2bn(&raw, "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F") == 64, "parse p");
+	BN_copy(p.get(), raw);
+	BN_free(raw);
+	check(field::from_bn(p.get()) == field::p, "field modulus");
+
+	// Values next to 0, p and 2^256 mod p exercise the carries and the final reduction.
+	std::vector<bn_ptr> values;
+	for (const char* hex : {"0", "1", "2", "1000003D0", "1000003D1", "1000003D2",
+		"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2E",
+		"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2D",
+		"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE00000000",
+		"8000000000000000000000000000000000000000000000000000000000000000",
+		"7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFE17"})
+	{
+		BIGNUM* v = nullptr;
+		check(BN_hex2bn(&v, hex) > 0, "parse field edge value");
+		values.emplace_back(v);
+	}
+
+	while (values.size() < 200)
+	{
+		values.push_back(new_bn());
+		check(BN_rand_range(values.back().get(), p.get()), "random field element");
+	}
+
+	for (const bn_ptr& a : values)
+	{
+		const field::u256 fa = field::from_bn(a.get());
+		for (const bn_ptr& b : values)
+		{
+			const field::u256 fb = field::from_bn(b.get());
+			check(BN_mod_mul(r.get(), a.get(), b.get(), p.get(), ctx.get())
+				&& field::mul(fa, fb) == field::from_bn(r.get()), "field multiplication");
+			check(BN_mod_sub(r.get(), a.get(), b.get(), p.get(), ctx.get())
+				&& field::sub(fa, fb) == field::from_bn(r.get()), "field subtraction");
+		}
+
+		if (!BN_is_zero(a.get()))
+		{
+			check(BN_mod_inverse(r.get(), a.get(), p.get(), ctx.get())
+				&& field::invert(fa) == field::from_bn(r.get()), "field inversion");
+		}
+	}
 }
 
 constexpr std::string_view legacy_uncompressed = "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm";
@@ -181,6 +239,24 @@ void test_walker()
 			check(!stopped && visited == 40, "walker completes multiple batches");
 		}
 
+		// Large keys, up to the last 40 below the group order: n - 41 + 39 = n - 2.
+		bn_ptr last = new_bn(), random = new_bn();
+		check(BN_sub(last.get(), walker.order(), BN_value_one()) && BN_sub_word(last.get(), 40)
+			&& BN_rand_range(random.get(), last.get()) && BN_add_word(random.get(), 1), "large walk starts");
+		for (const BIGNUM* start : {last.get(), random.get()})
+		{
+			const bn_ptr key = new_bn();
+			unsigned visited = 0;
+			walker.walk(start, 40, [&](std::uint64_t index, std::span<const std::uint8_t> pub)
+				{
+					check(BN_copy(key.get(), start) && BN_add_word(key.get(), index)
+						&& std::ranges::equal(pub, reference_pubkey(key.get(), compressed)), "walker matches for large keys");
+					++visited;
+					return false;
+				});
+			check(visited == 40, "large walk completes");
+		}
+
 		address_targets targets;
 		check(targets.add(hash160_to_bech32(hash160_of(reference_pubkey(19, true)))), "walker target");
 		targets.sort();
@@ -201,6 +277,7 @@ void test_walker()
 
 int main()
 {
+	test_field();
 	test_addresses();
 	test_targets_and_output();
 	test_walker();

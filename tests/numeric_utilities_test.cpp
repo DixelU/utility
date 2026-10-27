@@ -119,6 +119,23 @@ void test_long_uint_degree(std::mt19937_64& random, std::size_t iterations)
 		require(to_reference(lhs + rhs) == ((lhs_reference + rhs_reference) & mask), "long_uint addition mismatch");
 		require(to_reference(lhs - rhs) == ((lhs_reference - rhs_reference) & mask), "long_uint subtraction mismatch");
 		require(to_reference(lhs * rhs) == ((lhs_reference * rhs_reference) & mask), "long_uint multiplication mismatch");
+		require(
+			to_reference(value_type::multiply_wide(lhs, rhs)) == lhs_reference * rhs_reference,
+			"long_uint full-width multiplication mismatch");
+		for (const bool carry_in : {false, true})
+		{
+			const cpp_int carry_reference = carry_in ? 1 : 0;
+			const auto [sum, carry] = value_type::add_with_carry(lhs, rhs, carry_in);
+			const cpp_int exact_sum = lhs_reference + rhs_reference + carry_reference;
+			require(
+				to_reference(sum) == (exact_sum & mask) && carry == (exact_sum > mask),
+				"long_uint add_with_carry mismatch");
+			const auto [difference, borrow] = value_type::subtract_with_borrow(lhs, rhs, carry_in);
+			const cpp_int exact_difference = lhs_reference - rhs_reference - carry_reference;
+			require(
+				to_reference(difference) == (exact_difference & mask) && borrow == (exact_difference < 0),
+				"long_uint subtract_with_borrow mismatch");
+		}
 		require(to_reference(lhs / rhs) == lhs_reference / rhs_reference, "long_uint division mismatch");
 		require(to_reference(lhs % rhs) == lhs_reference % rhs_reference, "long_uint remainder mismatch");
 		require(to_reference(lhs & rhs) == (lhs_reference & rhs_reference), "long_uint bitwise-and mismatch");
@@ -169,6 +186,18 @@ void test_long_uint_degree(std::mt19937_64& random, std::size_t iterations)
 	require(maximum % value_type(1) == value_type(0), "long_uint maximum remainder one mismatch");
 	require(maximum / maximum == value_type(1), "long_uint self-division mismatch");
 	require(maximum * maximum == value_type(1), "long_uint maximum square must wrap to one");
+	require(
+		to_reference(value_type::multiply_wide(maximum, maximum)) == mask * mask,
+		"long_uint full-width maximum square mismatch");
+	require(
+		value_type::add_with_carry(maximum, value_type(), true) == std::pair{value_type(), true},
+		"long_uint carry must ripple through every limb");
+	require(
+		value_type::subtract_with_borrow(value_type(), value_type(), true) == std::pair{maximum, true},
+		"long_uint borrow must ripple through every limb");
+	require(
+		value_type::subtract_with_borrow(maximum, maximum) == std::pair{value_type(), false},
+		"long_uint equal operands must not borrow");
 	require(
 		value_type::from_decimal(mask.convert_to<std::string>()) == maximum,
 		"long_uint must parse its maximum value");
@@ -221,6 +250,13 @@ void test_long_uint_sparse_degree(std::mt19937_64& random, std::size_t iteration
 		require(lhs.used_limbs() == expected_used, "long_uint used limb count mismatch");
 		require(to_reference(lhs * rhs) == ((lhs_reference * rhs_reference) & mask), "long_uint sparse multiplication mismatch");
 		require(to_reference(rhs * lhs) == ((lhs_reference * rhs_reference) & mask), "long_uint sparse multiplication is not commutative");
+		require(
+			to_reference(value_type::multiply_wide(lhs, rhs)) == lhs_reference * rhs_reference,
+			"long_uint sparse full-width multiplication mismatch");
+		require(
+			to_reference(value_type::add_with_carry(lhs, rhs).first) == ((lhs_reference + rhs_reference) & mask) &&
+			to_reference(value_type::subtract_with_borrow(lhs, rhs).first) == ((lhs_reference - rhs_reference) & mask),
+			"long_uint sparse carry propagation mismatch");
 
 		const auto [quotient, remainder] = value_type::divmod(lhs, rhs);
 		require(to_reference(quotient) == lhs_reference / rhs_reference, "long_uint sparse division mismatch");
@@ -457,6 +493,20 @@ void test_long_uint()
 		make_wider(~0ULL, ~0ULL, ~0ULL, ~0ULL), make_wider(~0ULL, ~0ULL, 1, 0)));
 	static_assert(constexpr_divmod_consistent(
 		make_wider(123, 456, 789, 1011), make_wider(1, 2, 3, 4)));
+
+	// Constant evaluation takes the portable carry and multiply-add paths as well.
+	static_assert(dixelu::long_uint<0>::multiply_wide(make_wide(~0ULL, ~0ULL), make_wide(~0ULL, ~0ULL))
+		== make_wider(1, 0, ~0ULL - 1, ~0ULL));
+	static_assert(dixelu::long_uint<0>::multiply_wide(make_wide(0x0123456789ABCDEFULL, 0), make_wide(0, 0xFEDCBA9876543210ULL))
+		== make_wider(0, 0x2236D88FE5618CF0ULL, 0x0121FA00AD77D742ULL, 0));
+	static_assert(dixelu::long_uint<0>::add_with_carry(make_wide(~0ULL, ~0ULL), make_wide(0, 0), true)
+		== std::pair{make_wide(0, 0), true});
+	static_assert(dixelu::long_uint<0>::add_with_carry(make_wide(~0ULL, 5), make_wide(1, 6))
+		== std::pair{make_wide(0, 12), false});
+	static_assert(dixelu::long_uint<0>::subtract_with_borrow(make_wide(0, 0), make_wide(0, 0), true)
+		== std::pair{make_wide(~0ULL, ~0ULL), true});
+	static_assert(dixelu::long_uint<0>::subtract_with_borrow(make_wide(0, 7), make_wide(1, 2))
+		== std::pair{make_wide(~0ULL, 4), false});
 
 	std::mt19937_64 random(0xA11CE5EEDULL);
 	test_long_uint_degree<0>(random, 1500);
