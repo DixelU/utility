@@ -27,7 +27,10 @@ and matching WIF compression flag.
 The key walker is shared. Compressed P2PKH and P2WPKH reuse the same HASH160;
 uncompressed P2PKH plus P2WPKH needs two hashes of different public-key encodings.
 Search mode hashes only the forms needed by the target list and encodes addresses
-only when reporting a match.
+only when reporting a match. Each lookup first tests a bitmap over the targets'
+leading hash bits (about 32 bits per target, 8 KB minimum), so most misses never
+reach the binary search; large `--addr_file` lists cost about 4 bytes per address
+on top of the 20-byte hashes.
 
 ## Derive both addresses for one key
 

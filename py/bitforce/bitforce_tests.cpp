@@ -1,6 +1,7 @@
 // Exercise the same implementation as the standalone executable, without its CLI.
 #define BITFORCE_TEST
 #include "bitforce.cpp"
+#include <random>
 #include <sstream>
 
 namespace
@@ -92,6 +93,49 @@ void test_field()
 	}
 }
 
+void test_hash160_set()
+{
+	hash160_set none;
+	none.build();
+	check(none.empty() && !none.contains(hash160{}), "empty set has no members");
+
+	// Two in three members repeat the previous member's leading 8 bytes, and the probes below
+	// mostly change only the tail, so lookups get past the bitmap and the search must decide.
+	std::mt19937_64 random{0xB17F0CE};
+	const auto random_hash = [&]
+	{
+		hash160 h;
+		for (std::uint8_t& byte : h)
+			byte = static_cast<std::uint8_t>(random());
+		return h;
+	};
+
+	std::vector<hash160> members;
+	hash160_set set;
+	for (int i = 0; i < 3000; ++i)
+	{
+		hash160 h = random_hash();
+		if (i % 3 != 0)
+			std::copy_n(members.back().begin(), 8, h.begin());
+		members.push_back(h);
+		set.insert(h);
+	}
+	set.build();
+	check(!set.empty(), "filled set is not empty");
+
+	for (const hash160& h : members)
+		check(set.contains(h), "every member is found");
+
+	for (int i = 0; i < 10000; ++i)
+	{
+		hash160 near = members[random() % members.size()];
+		near[8 + random() % 12] ^= static_cast<std::uint8_t>(1 + random() % 255);
+		for (const hash160& probe : {near, random_hash()})
+			check(set.contains(probe) == (std::ranges::find(members, probe) != members.end()),
+				"lookup agrees with a linear search");
+	}
+}
+
 constexpr std::string_view legacy_uncompressed = "1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm";
 constexpr std::string_view legacy_compressed = "1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH";
 constexpr std::string_view segwit = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
@@ -174,18 +218,18 @@ void test_targets_and_output()
 	check(targets.empty(), "empty target set");
 	check(!targets.add("bc1invalid") && targets.empty(), "bad target rejected");
 	check(targets.add(segwit), "add Bech32 target");
-	targets.sort();
+	targets.build();
 	check(targets.match(pub) == address_format::bech32, "compressed Bech32 match");
 	check(targets.match(uncompressed_pub) == address_format::bech32, "uncompressed input compressed for Bech32");
 	check(!targets.match(other_pub), "different key does not match");
 	check(targets.add(legacy_uncompressed), "add legacy target to mixed list");
-	targets.sort();
+	targets.build();
 	check(targets.match(uncompressed_pub) == address_format::base58, "mixed list legacy match");
 	check(targets.match(pub) == address_format::bech32, "mixed list Bech32 match");
 	targets = {};
 	check(targets.add(legacy_compressed), "add compressed legacy target");
 	check(targets.add(hash160_to_bech32(hash160_of(reference_pubkey(2, true)))), "add different Bech32 target");
-	targets.sort();
+	targets.build();
 	check(targets.match(pub) == address_format::base58, "compressed legacy in mixed list");
 	check(targets.match(other_pub) == address_format::bech32, "Bech32 hit after legacy miss");
 	check(targets.match(reference_pubkey(2, true)) == address_format::bech32, "shared compressed hash match");
@@ -193,7 +237,7 @@ void test_targets_and_output()
 	// An address can encode any hash, but P2WPKH must be derived from a compressed key.
 	targets = {};
 	check(targets.add(hash160_to_bech32(hash160_of(uncompressed_pub))), "add encoded uncompressed hash");
-	targets.sort();
+	targets.build();
 	check(!targets.match(uncompressed_pub), "uncompressed hash must not match P2WPKH");
 	check(!targets.match(pub), "compression distinction preserved");
 
@@ -259,7 +303,7 @@ void test_walker()
 
 		address_targets targets;
 		check(targets.add(hash160_to_bech32(hash160_of(reference_pubkey(19, true)))), "walker target");
-		targets.sort();
+		targets.build();
 		bn_ptr first = new_bn();
 		check(BN_one(first.get()), "set search start");
 		std::uint64_t hit = 0;
@@ -278,6 +322,7 @@ void test_walker()
 int main()
 {
 	test_field();
+	test_hash160_set();
 	test_addresses();
 	test_targets_and_output();
 	test_walker();

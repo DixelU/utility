@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -399,26 +400,70 @@ std::span<const std::uint8_t> compressed_public_key(
 	return storage;
 }
 
+// A set of hash160s for lookups that nearly always miss. A bitmap indexed by the leading
+// bits of the members, with about 32 bits per member, rejects most misses with one memory
+// access; only around 1 in 32 goes on to the binary search, which also confirms real hits.
+class hash160_set
+{
+public:
+	void insert(const hash160& h) { sorted_.push_back(h); }
+
+	// Call after the last insert and before the first lookup.
+	void build()
+	{
+		std::ranges::sort(sorted_);
+
+		const unsigned log2_bits = std::max(16, std::bit_width(sorted_.size()) + 5);
+		shift_ = 64 - log2_bits;
+		bitmap_.assign((std::size_t{1} << log2_bits) / 64, 0);
+		for (const hash160& h : sorted_)
+		{
+			const std::uint64_t slot = slot_of(h);
+			bitmap_[slot / 64] |= std::uint64_t{1} << (slot % 64);
+		}
+	}
+
+	[[nodiscard]] bool empty() const { return sorted_.empty(); }
+
+	[[nodiscard]] bool contains(const hash160& h) const
+	{
+		assert(!bitmap_.empty());
+
+		const std::uint64_t slot = slot_of(h);
+		if (!((bitmap_[slot / 64] >> (slot % 64)) & 1)) [[likely]]
+			return false;
+		return std::ranges::binary_search(sorted_, h);
+	}
+
+private:
+	[[nodiscard]] std::uint64_t slot_of(const hash160& h) const { return load_be64(h.data()) >> shift_; }
+
+	std::vector<hash160> sorted_;
+	std::vector<std::uint64_t> bitmap_;
+	unsigned shift_ = 64;
+};
+
 struct address_targets
 {
-	std::vector<hash160> base58, bech32;
+	hash160_set base58, bech32;
 
 	bool add(const std::string_view address)
 	{
 		hash160 h;
 		if (address_to_hash160(address, h))
-			base58.push_back(h);
+			base58.insert(h);
 		else if (bech32_to_hash160(address, h))
-			bech32.push_back(h);
+			bech32.insert(h);
 		else
 			return false;
 		return true;
 	}
 
-	void sort()
+	// Call after the last add and before the first match.
+	void build()
 	{
-		std::ranges::sort(base58);
-		std::ranges::sort(bech32);
+		base58.build();
+		bech32.build();
 	}
 
 	[[nodiscard]] bool empty() const { return base58.empty() && bech32.empty(); }
@@ -431,7 +476,7 @@ struct address_targets
 		if (!base58.empty())
 		{
 			h = hash160_of(pub);
-			if (std::ranges::binary_search(base58, h))
+			if (base58.contains(h))
 				return address_format::base58;
 		}
 
@@ -442,7 +487,7 @@ struct address_targets
 			if (base58.empty() || pub.size() != 33)
 				h = hash160_of(compressed_public_key(pub, storage));
 
-			if (std::ranges::binary_search(bech32, h))
+			if (bech32.contains(h))
 				return address_format::bech32;
 		}
 
@@ -903,7 +948,7 @@ int main(int argc, char** argv)
 	std::cout << "Bitcoin partial private key brute-forcer (C++)\n"
 		<< "Supports mainnet P2PKH (Base58) and P2WPKH (Bech32) addresses.\n";
 
-	targets.sort();
+	targets.build();
 
 	const bool compressed = config::compressed || (targets.empty()
 		? config::dump_format == address_format::bech32 : targets.base58.empty());
